@@ -1,0 +1,46 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+*.log.*
+
+# Celery
+celerybeat-schedule.*
+
+# Frontend
+frontend/.env.local
+frontend/.env.*.local
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pipeline temp outputs
+pipeline/violations.txt
+pipeline/'''risks'''
+
+# Claude session files
+.claude/
