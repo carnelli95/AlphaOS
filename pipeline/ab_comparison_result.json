@@ -1,0 +1,403 @@
+{
+  "generated_at": "2026-06-28T20:32:14.438263",
+  "summary": {
+    "total": 8,
+    "recent_events_gain": 5,
+    "dart_risk_gain": 2,
+    "no_change": 1
+  },
+  "results": [
+    {
+      "code": "011420",
+      "name": "갤럭시아에스엠",
+      "event_type": "contract",
+      "stage_c_only": {
+        "summary": "ROE 5.1%로 업종 중앙값 6.5%에 근접하고 있다. 사업보고서에는 갤럭시아 에스엠의 테크노짐 국내총판권 보유가 기재돼 있다. 두 가지 지표가 모두 긍정적인 방향성을 드러낸다.",
+        "investment_point": "정량에서 PBR 0.5x가 확인되고, DART에서 테크노짐의 국내총판권 보유가 기재돼 있다.",
+        "risks": [
+          {
+            "point": "스포츠 및 오락 관련 서비스 부문 매출이 감소했다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "합 계 32,487 32,950 30,094"
+          },
+          {
+            "point": "프리미엄 피트니스 부문 매출이 감소세를 보였다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "프리미엄 피트니스 헬스기구 등 14,384 14,913 13,618"
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 2
+        }
+      },
+      "stage_cd": {
+        "summary": "갤럭시아에스엠의 PER 9.7x는 업종 상위 25%에 해당한다. 사업보고서에는 테크노짐의 국내총판권 보유가 기재되어 있다. 이는 기업의 경쟁력을 강화하는 요소로 작용할 수 있다.",
+        "investment_point": "정량에서 PER 9.7x가 확인되고, DART에서 테크노짐의 국내총판권 보유가 기재되어 있다.",
+        "risks": [
+          {
+            "point": "스포츠 및 오락 관련 서비스 부문 매출 감소.",
+            "evidence": "매출이 감소했다.",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "프리미엄 피트니스 부문 매출 감소.",
+            "evidence": "프리미엄 피트니스 부문 매출이 감소세를 보였다.",
+            "source_ref": "dart:risk[1]"
+          }
+        ],
+        "recent_events": "최근에 타법인 주식 및 출자 증권 양수 결정을 공시했다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 2,
+          "dart_strengths": 2
+        }
+      }
+    },
+    {
+      "code": "001470",
+      "name": "삼부토건",
+      "event_type": "finance",
+      "stage_c_only": {
+        "summary": "ROE 50.8%로 업종 상위 7%에 해당한다. 사업보고서에는 스틸사업부문 양수도 계약 체결이 기재돼 있다. 두 가지 근거로 높은 수익성과 사업의 신뢰성을 확인할 수 있다.",
+        "investment_point": "정량에서 확인된 ROE 50.8%와 DART에서 기재된 스틸사업부문 양수도 계약 체결이 일치한다.",
+        "risks": [
+          {
+            "point": "신용등급 하락으로 인해 실적에 부정적 영향이 있다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "회사 신용등급 하락으로 인해 공공공사의 실적이 부진하다."
+          },
+          {
+            "point": "해외사업부문이 청산 절차에 들어갔다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "현지해외법인들은 휴업상태로 청산 절차 진행중입니다."
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 1
+        }
+      },
+      "stage_cd": {
+        "summary": "ROE 50.8%로 업종 중앙값 5.9%를 크게 초과한다. 사업보고서에는 스틸사업부문 양수도 계약 체결이 기재돼 있다. 재무적 우수성과 사업의 변화가 함께 확인된다.",
+        "investment_point": "정량에서 ROE 50.8%가 확인되고, DART에서 스틸사업부문 양수도 계약 체결이 기재되어 있다.",
+        "risks": [
+          {
+            "point": "신용등급 하락으로 인한 실적 부진이다.",
+            "evidence": "회사의 신용등급 하락으로 인해 공공공사의 실적이 부진하다.",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "해외사업부문의 청산 절차가 진행 중이다.",
+            "evidence": "현지해외법인들은 휴업상태로 청산 절차 진행중이다.",
+            "source_ref": "dart:risk[1]"
+          }
+        ],
+        "recent_events": "유상증자와 감자가 각각 2건 공시되었다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 2,
+          "dart_strengths": 2
+        }
+      }
+    },
+    {
+      "code": "003540",
+      "name": "대신증권",
+      "event_type": "finance",
+      "stage_c_only": {
+        "summary": "ROE 11.5%로 업종 중앙값 5.1%를 크게 초과한다. 사업보고서에는 특정 고객사가 전체 매출의 X%를 차지한다고 기재되어 있다. 수익성과 고객 의존도가 확인된다.",
+        "investment_point": "정량에서 ROE 11.5%가 확인되고, DART에서 특정 고객사가 전체 매출의 X%를 차지한다고 기재되어 있다.",
+        "risks": [
+          {
+            "point": "주요 고객사에 대한 의존도가 높다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "[이 기업]이 특정 고객사가 전체 매출의 X%를 차지한다."
+          },
+          {
+            "point": "미청산 사모펀드가 존재한다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "2024.08.23일자로 청산되었습니다."
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 0
+        }
+      },
+      "stage_cd": {
+        "summary": "ROE가 11.5%로 업종 중앙값 5.1%를 초과하고 있다. 사업보고서에는 미청산 사모펀드가 존재한다고 기재돼 있다. 재무와 사업 근거 모두 확인된다.",
+        "investment_point": "정량에서 ROE 11.5%가 확인되었고, DART에서 미청산 사모펀드가 존재한다고 기재돼 있다.",
+        "risks": [
+          {
+            "point": "대신증권의 미청산 사모펀드가 존재한다.",
+            "evidence": "2024.08.23일자로 청산되었습니다.",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "주요 고객사의 의존도가 높다.",
+            "evidence": "[이 기업]이 특정 고객사가 전체 매출의 X%를 차지한다.",
+            "source_ref": "dart:risk[1]"
+          }
+        ],
+        "recent_events": "자본으로 인정되는 채무 증권 발행 결정이 있었다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 2,
+          "dart_strengths": 0
+        }
+      }
+    },
+    {
+      "code": "003490",
+      "name": "대한항공",
+      "event_type": "management",
+      "stage_c_only": {
+        "summary": "대한항공의 ROE 8.6%는 업종 중앙값 -14.4%를 초과한다. 사업보고서에는 2024년 12월 28일부터 인천-푸저우 노선에 주 3회 신규 취항이 기재돼 있다. 두 근거 모두 기업의 경쟁력을 나타낸다.",
+        "investment_point": "정량에서 ROE 8.6%가 확인되고, DART에서 2024년 12월 28일부터 인천-푸저우 노선에 주 3회 신규 취항이 기재돼 있다.",
+        "risks": [
+          {
+            "point": "중국발 해외 여행 심리 회복에 어려움이 있음.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "중국발 해외 여행 심리 회복이 지연되는 가운데"
+          },
+          {
+            "point": "유가 변동이 영업 성과에 영향을 줄 수 있음.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "유가 변동은 당사의 최대 사업부문인 항공운송사업부의 영업 성과에 영향을 미칩니다."
+          }
+        ],
+        "recent_events": "2024년 12월 28일부터 인천-푸저우 노선에 주 3회 신규 취항하며, 에어버스 A350-900 2대를 도입할 예정이다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 2,
+          "dart_strengths": 0
+        }
+      },
+      "stage_cd": {
+        "summary": "ROE 8.6%로 업종 중앙값 -14.4%를 초과한다. 사업보고서에는 중국발 해외 여행 심리의 회복 지연이 기재돼 있다. 재무적 강점과 리스크가 모두 확인된다.",
+        "investment_point": "정량에서 ROE 8.6%가 확인되고, DART에서 중국발 해외 여행 심리 회복 지연이 기재돼 있다.",
+        "risks": [
+          {
+            "point": "중국발 해외 여행 심리 회복 지연입니다.",
+            "evidence": "중국발 해외 여행 심리 회복이 지연됨",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "유가 변동이 영업 성과에 영향을 미칠 수 있습니다.",
+            "evidence": "유가 변동은 당사의 최대 사업부문인 항공운송사업부의 영업 성과에 영향을 미칩니다.",
+            "source_ref": "dart:risk[1]"
+          },
+          {
+            "point": "회사 합병 결정이 리스크 요소로 작용할 수 있습니다.",
+            "evidence": "회사 합병 결정에 대한 주요사항 보고서를 기재 정정했다.",
+            "source_ref": "dart:event[0]"
+          }
+        ],
+        "recent_events": "회사는 합병 결정을 공시하였으며, 중요한 재무 영향을 미칠 것으로 분석된다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 3,
+          "dart_strengths": 1
+        }
+      }
+    },
+    {
+      "code": "017040",
+      "name": "광명전기",
+      "event_type": "management",
+      "stage_c_only": {
+        "summary": "영업이익률 -10.4%로 업종 중앙값 3.0%를 하회하고 있다. 사업보고서에는 수배전반 부문에서 매출이 증가하고 있다고 기재돼 있다. 수익성에는 한계가 있지만, 특정 사업 부문에서 성장이 확인된다.",
+        "investment_point": "정량에서 영업이익률 -10.4%가 확인되고, DART에서 수배전반 부문에서 매출 증가가 기재돼 있다.",
+        "risks": [
+          {
+            "point": "공사수익 부문에서 손실이 기록됐다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "공사수익 전기/기계설비/소방설비"
+          },
+          {
+            "point": "태양광발전시스템 부문에서 손실이 발생했다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "영업이익(손실) (340,015)"
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 3
+        }
+      },
+      "stage_cd": {
+        "summary": "영업이익률 -10.4%로 업종 중앙값 3.0%를 초과한다. 사업보고서에는 수배전반 부문에서 매출이 증가했다고 기재돼 있다. 두 근거가 함께 나타난다.",
+        "investment_point": "정량에서 영업이익률 -10.4%가 확인되고, DART에서 수배전반 부문에서 매출 증가가 기재돼 있다.",
+        "risks": [
+          {
+            "point": "공사수익 부문 손실 기록",
+            "evidence": "공사수익 전기/기계설비/소방설비",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "태양광발전시스템 부문 손실 기록",
+            "evidence": "영업이익(손실) (340,015)",
+            "source_ref": "dart:risk[1]"
+          }
+        ],
+        "recent_events": "감자결정을 공시했다는 점에서 재무적 영향을 미칠 것으로 보인다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 2,
+          "dart_strengths": 2
+        }
+      }
+    },
+    {
+      "code": "020560",
+      "name": "아시아나항공",
+      "event_type": "management",
+      "stage_c_only": {
+        "summary": "ROE -15.2%로 업종 중앙값 -14.4%를 초과한다. 사업보고서에는 2024년 국제 여객수요 회복에 따라 여객 사업량을 크게 확대하였다고 기재되어 있다. 재무 성과와 사업 성장 근거가 모두 확인된다.",
+        "investment_point": "정량에서 ROE -15.2%가 확인되고, DART에서 여객 사업량 확대가 기재되어 있다.",
+        "risks": [
+          {
+            "point": "경쟁 심화가 화물사업에 직접적인 리스크를 가할 수 있다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "경쟁 심화 가능성이 있다."
+          }
+        ],
+        "recent_events": "2024년 4분기에 A321NEO 여객기 2대와 B747-400 중고 화물기 2대를 도입하였다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 1,
+          "dart_strengths": 2
+        }
+      },
+      "stage_cd": {
+        "summary": "ROE -15.2%는 업종 중앙값 -14.4%보다 낮고 상위 67%에 해당한다. 사업보고서에는 2024년 국제 여객수요 회복에 따라 여객 사업량이 크게 확대되었다고 기재돼 있다. 재무 지표와 사업 확장이 함께 확인된다.",
+        "investment_point": "정량에서 ROE -15.2%가 확인되고, DART에서 여객 사업량 확대가 기재되어 있다.",
+        "risks": [
+          {
+            "point": "경쟁 심화 가능성이 언급됨.",
+            "evidence": "화물사업은 여객기 운항 증가에 따라 소폭 증가했으나 경쟁 심화 가능성이 있다.",
+            "source_ref": "dart:risk[0]"
+          }
+        ],
+        "recent_events": "회사가 합병 결정을 공시하였다. 이와 관련된 정정 공시도 있었다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 1,
+          "dart_strengths": 2
+        }
+      }
+    },
+    {
+      "code": "002420",
+      "name": "세기상사",
+      "event_type": "management",
+      "stage_c_only": {
+        "summary": "ROE -6.5%로 업종 중앙값 1.5%에 미치지 못한다. 사업보고서에는 석유판매사업부와 문화레저사업부 신설이 기재되어 있다. 안정적인 매출원 확보가 확인된다.",
+        "investment_point": "정량에서 ROE -6.5%가 확인되고, DART에서 석유판매사업부와 문화레저사업부 신설이 기재되어 있다.",
+        "risks": [
+          {
+            "point": "영화상영 사업부가 중단되었다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "2024년 9월 30일자로 영위중이던 영화상영업을 중단하고 임대사업으로 전환하였다."
+          },
+          {
+            "point": "매점판매가 영업 중단되어 매출 비중이 낮아졌다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "영화상영(중단) 482 1.5% 매점판매(중단) 61 0.2%"
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 3
+        }
+      },
+      "stage_cd": {
+        "summary": "ROE -6.5%로 업종 중앙값 1.5%를 크게 하회한다. 사업보고서에는 석유판매사업부가 2021년 4월 신설되어 안정적인 매출원을 확보하였다고 기재돼 있다. 재무 수치와 사업 다각화가 확인된다.",
+        "investment_point": "정량에서 ROE -6.5%가 확인되고, DART에서 석유판매사업부가 2021년 4월 신설되어 안정적인 매출원을 확보하였다고 기재되어 있다.",
+        "risks": [
+          {
+            "point": "영화상영 사업부가 중단되었다.",
+            "evidence": "2024년 9월 30일자로 영위중이던 영화상영업을 중단하고 임대사업으로 전환하였습니다.",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "영화상영업과 매점판매의 매출 비중이 낮아졌다.",
+            "evidence": "영화상영(중단) 482 1.5%  매점판매(중단) 61 0.2%",
+            "source_ref": "dart:risk[1]"
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 1
+        }
+      }
+    },
+    {
+      "code": "036420",
+      "name": "콘텐트리중앙",
+      "event_type": "risk",
+      "stage_c_only": {
+        "summary": "영업이익률 5.6%로 업종 상위 25%에 해당한다. 사업보고서에는 콘텐트 사업부문 매출이 전체 매출의 60%를 차지하고 있다고 기재돼 있다. 재무 성과와 사업 구조의 안정성이 확인된다.",
+        "investment_point": "정량에서 영업이익률 5.6%가 확인되고, DART에서 콘텐트 사업부문 매출의 비중이 60%라고 기재돼 있다.",
+        "risks": [
+          {
+            "point": "COVID-19가 극장 관객 수 감소에 영향을 미쳤다.",
+            "source_ref": "dart:risk[0]",
+            "evidence": "COVID-19의 영향으로 극장영화 소비 형태 및 관객수는 큰 변화를 겪음"
+          },
+          {
+            "point": "콘텐트 시장 경쟁이 심화되고 있다.",
+            "source_ref": "dart:risk[1]",
+            "evidence": "경쟁업체의 진입에 따른 경쟁이 심화되는 추세"
+          }
+        ],
+        "recent_events": null,
+        "score": {
+          "recent_events": false,
+          "dart_risks": 2,
+          "dart_strengths": 1
+        }
+      },
+      "stage_cd": {
+        "summary": "영업이익률 5.6%로 업종 상위 25%에 속한다. 사업보고서에는 콘텐트 사업부문 매출이 전체 매출의 60%를 차지하고 있다는 사실이 기재돼 있다. 두 근거 모두 기업의 수익성과 성장성을 입증한다.",
+        "investment_point": "정량에서 영업이익률 5.6%가 확인되고, DART에서 콘텐트 사업부문 매출이 전체 매출의 60%를 차지한다고 기재돼 있다.",
+        "risks": [
+          {
+            "point": "COVID-19로 인한 관객 수 감소가 우려된다.",
+            "evidence": "COVID-19의 영향으로 극장영화 소비 형태 및 관객수는 2019년 이후 큰 변화를 겪었습니다.",
+            "source_ref": "dart:risk[0]"
+          },
+          {
+            "point": "콘텐트 시장 경쟁이 심화되고 있다.",
+            "evidence": "일부 거대 자본력과 네트워크를 바탕으로 한 경쟁업체의 진입에 따른 경쟁이 심화되는 추세입니다.",
+            "source_ref": "dart:risk[1]"
+          },
+          {
+            "point": "회생절차 개시 신청으로 인한 재무적 리스크가 있다.",
+            "evidence": "회생절차 개시 신청에 대한 주요사항 보고서",
+            "source_ref": "dart:event[0]"
+          }
+        ],
+        "recent_events": "회생절차 개시 신청에 대한 주요사항 보고서가 발표됐다. 전환사채권 발행 결정에 대한 주요사항 보고서도 다수 발표됐다.",
+        "score": {
+          "recent_events": true,
+          "dart_risks": 3,
+          "dart_strengths": 1
+        }
+      }
+    }
+  ]
+}
