@@ -340,14 +340,62 @@ def _fmt_dart(stage_c: dict) -> str:
     return "\n".join(lines) if lines else "[사업보고서 분석]\n  (Fact 없음)"
 
 
+def _fmt_stage_d(stage_d: dict) -> str:
+    """Stage D 최근 이벤트 블록 포맷 (Thesis 프롬프트 보강용)."""
+    if not stage_d:
+        return ""
+    facts = stage_d.get("facts", [])
+    if not facts:
+        return ""
+
+    lines = [f"[최근 주요 이벤트 (Stage D) — Stage C를 보강하는 최신 정보. 기존 투자 논리 변경 금지]"]
+    for i, f in enumerate(facts):
+        date_str    = f.get("date", "")
+        recency     = f.get("recency_days", "?")
+        ev_type     = f.get("type", "other")
+        fact_text   = f.get("fact", "")
+        impact      = f.get("financial_impact", "low")
+        imp         = f.get("importance", 2)
+        ref         = f"dart:event[{i}]"
+
+        impact_note = ""
+        if impact == "high":
+            impact_note = " ★재무영향高"
+        elif impact == "medium":
+            impact_note = " ★재무영향中"
+
+        lines.append(
+            f"  {ref} [{date_str}+{recency}일] [{ev_type}]{impact_note} (중요도{imp}) {fact_text}"
+        )
+
+    # high-impact 이벤트 강제 반영 지시
+    high_impact = [f for f in facts if f.get("financial_impact") == "high"]
+    if high_impact:
+        titles = " / ".join(f.get("fact", "") for f in high_impact)
+        lines.append(
+            f"  ⚠ financial_impact=high 이벤트 {len(high_impact)}개 감지: [{titles}]"
+            f" — 반드시 strengths 또는 risks 중 적합한 곳에 1개 이상 포함. 무시 금지."
+        )
+
+    # risk 타입 이벤트 별도 강조
+    risk_events = [f for f in facts if f.get("type") == "risk"]
+    if risk_events:
+        lines.append(f"  ⚠ 위 이벤트 중 risk 유형 {len(risk_events)}개 — risks 섹션에 후보로 고려할 것 (Stage C risk와 중복 시 병합)")
+
+    lines.append("  ※ Stage D는 최신 이벤트 컨텍스트 제공용. investment_point에 최근 이벤트를 언급할 것.")
+    return "\n".join(lines)
+
+
 def build_thesis_prompt(
     company_name: str,
     alpha_score: dict,
     stage_b: dict,
     stage_c: dict,
+    stage_d: dict | None = None,
 ) -> str:
-    quant_block = _fmt_quant(stage_b, alpha_score)
-    dart_block  = _fmt_dart(stage_c)
+    quant_block  = _fmt_quant(stage_b, alpha_score)
+    dart_block   = _fmt_dart(stage_c)
+    event_block  = _fmt_stage_d(stage_d or {})
 
     return f"""너는 AlphaOS 투자 리포트 합성 AI야. 아래 제공된 데이터만 사용해서 "{company_name}"의 투자 근거를 작성해줘.
 
@@ -386,6 +434,8 @@ def build_thesis_prompt(
 
 {dart_block}
 
+{event_block}
+
 [출력 형식 - JSON만, 다른 텍스트 절대 금지]
 {{
   "summary": "2~3문장 요약 (80~150자, 한국어). 정량 Peer 수치 1개 + DART 사실 1개 각각 반드시 포함. 1문장 슬로건 형식 금지.",
@@ -399,10 +449,11 @@ def build_thesis_prompt(
   "risks": [
     {{
       "point":      "핵심 리스크 한 문장",
-      "source_ref": "dart:risk[0]",
+      "source_ref": "dart:risk[0] 또는 dart:event[0]",
       "evidence":   "DART 원문 인용구 또는 수치"
     }}
   ],
+  "recent_events": "Stage D에 데이터가 있는 경우: 최근 주요 이벤트를 1~2문장으로 요약. 없으면 null.",
   "investment_point": "정량에서 확인된 X와 DART에서 기재된 Y가 일치한다는 형식으로 1~2문장 (한국어, 미래 예측 금지)"
 }}
 
@@ -432,30 +483,33 @@ def _safe_parse(raw: dict) -> dict:
         "summary":          raw.get("summary", ""),
         "strengths":        _items(raw.get("strengths")),
         "risks":            _items(raw.get("risks")),
+        "recent_events":    raw.get("recent_events") or None,
         "investment_point": raw.get("investment_point", ""),
     }
 
 
 # ─── 데이터 로드 / 저장 ───────────────────────────────────────────────────────────
 
-def load_thesis_inputs(engine, stock_code: str) -> tuple[str | None, dict, dict, dict]:
-    """DB에서 회사명 + alpha_score + stage_b + stage_c 로드."""
+def load_thesis_inputs(engine, stock_code: str) -> tuple[str | None, dict, dict, dict, dict]:
+    """DB에서 회사명 + alpha_score + stage_b + stage_c + stage_d 로드."""
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT s.name, r.alpha_score, r.stage_b_sections, r.stage_c_sections
+            SELECT s.name, r.alpha_score, r.stage_b_sections,
+                   r.stage_c_sections, r.stage_d_sections
             FROM stocks s
             LEFT JOIN ai_reports r ON r.stock_code = s.code
             WHERE s.code = :code
         """), {"code": stock_code}).fetchone()
 
     if not row:
-        return None, {}, {}, {}
+        return None, {}, {}, {}, {}
 
     return (
         row[0],
         row[1] or {},
         row[2] or {},
         row[3] or {},
+        row[4] or {},
     )
 
 
@@ -479,7 +533,7 @@ def generate_thesis_for_stock(
     stock_code: str,
     verbose: bool = False,
 ) -> dict | None:
-    name, alpha_score, stage_b, stage_c = load_thesis_inputs(engine, stock_code)
+    name, alpha_score, stage_b, stage_c, stage_d = load_thesis_inputs(engine, stock_code)
 
     if not name:
         print(f"  {stock_code}: stocks 테이블에 없음 → 스킵")
@@ -494,7 +548,7 @@ def generate_thesis_for_stock(
     confidence   = compute_confidence(reason_graph, stage_b)
 
     # 2. LLM 텍스트 합성
-    prompt = build_thesis_prompt(name, alpha_score, stage_b, stage_c)
+    prompt = build_thesis_prompt(name, alpha_score, stage_b, stage_c, stage_d)
     if verbose:
         print(f"\n--- 프롬프트 ({len(prompt)}자) ---")
         print(prompt[:3000])
@@ -527,7 +581,7 @@ if __name__ == "__main__":
     engine = get_engine()
     ensure_thesis_column(engine)
 
-    name, alpha, stage_b, stage_c = load_thesis_inputs(engine, target)
+    name, alpha, stage_b, stage_c, stage_d = load_thesis_inputs(engine, target)
     if not name:
         print(f"종목 없음: {target}")
         sys.exit(1)
@@ -538,7 +592,8 @@ if __name__ == "__main__":
     rank_str = f"  업종 내 {rank_s}/{total_s}위" if rank_s and total_s else ""
     print(f"=== {name} ({target}) ===")
     print(f"Alpha Score: {score}{rank_str}")
-    print(f"Stage B: {'있음' if stage_b else '없음'}  Stage C: {'있음' if stage_c else '없음'}")
+    has_d = bool(stage_d and stage_d.get("fact_count", 0) > 0)
+    print(f"Stage B: {'있음' if stage_b else '없음'}  Stage C: {'있음' if stage_c else '없음'}  Stage D: {'있음' if has_d else '없음'}")
 
     result = generate_thesis_for_stock(engine, target, verbose=True)
     if result:
