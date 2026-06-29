@@ -19,6 +19,7 @@ from datetime import datetime
 
 from sqlalchemy import text
 
+import generate_thesis as _thesis_mod
 from generate_thesis import (
     ensure_thesis_column,
     generate_thesis_for_stock,
@@ -138,6 +139,14 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
     print()
     print(f"완료: {datetime.now().isoformat()}")
     print(f"성공 {success_count} / 스킵 {skip_count} / 실패 {error_count}")
+
+    if success_count > 0:
+        rs = _thesis_mod._retry_stats
+        retry_rate = rs["retried"] / success_count * 100
+        print()
+        print("=== Attribution Validator 통계 ===")
+        print(f"재시도 발생:   {rs['retried']}건 / {success_count}건 ({retry_rate:.1f}%)")
+        print(f"영구 실패:     {rs['permanent_fail']}건  ← 목표 0건")
 
 
 if __name__ == "__main__":

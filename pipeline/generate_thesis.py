@@ -664,6 +664,11 @@ def _validate_thesis(
     return violations
 
 
+# ─── Attribution 재시도 통계 (batch 집계용) ──────────────────────────────────────
+
+_retry_stats: dict[str, int] = {"retried": 0, "permanent_fail": 0}
+
+
 # ─── 데이터 로드 / 저장 ───────────────────────────────────────────────────────────
 
 def load_thesis_inputs(engine, stock_code: str) -> tuple[str | None, dict, dict, dict, dict]:
@@ -754,10 +759,13 @@ def generate_thesis_for_stock(
         violations = _validate_thesis(thesis, stage_c_dart_cnt, stage_d_dart_cnt)
         if not violations:
             break
+        if attempt == 0:
+            _retry_stats["retried"] += 1
         if verbose:
             print(f"  ⚠ attribution validation 실패 (시도 {attempt + 1}/3): {violations}")
 
     if violations:
+        _retry_stats["permanent_fail"] += 1
         print(f"  ⚠ {name}({stock_code}): attribution 오류 3회 시도 후 미해결: {violations}")
 
     if verbose:
