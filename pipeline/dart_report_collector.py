@@ -202,14 +202,18 @@ def collect_business_report(
 ) -> CollectedReport | None:
     """
     후보 목록(원본 우선, 정정공시 후순위)을 순서대로 시도한다.
-    한 후보의 zip 다운로드가 실패하면 다음 후보로 넘어간다.
-    모든 후보가 실패하면 마지막 에러를 그대로 올린다(배치 로그에 원인 남기기 위함).
+    zip 다운로드 실패 → 다음 후보로 넘어간다.
+    다운로드 성공이지만 파싱 실패('failed') → 다음 후보도 시도한다.
+    'ok' 결과를 얻으면 즉시 반환, 모든 후보 실패 시 partial > failed 순으로 최선 반환.
+    모든 후보가 다운로드 자체에서 실패했을 때만 마지막 에러를 올린다.
     """
     candidates = find_business_report_candidates(api_key, corp_code, year)
     if not candidates:
         return None
 
     last_error: Exception | None = None
+    best_result: CollectedReport | None = None
+
     for candidate in candidates:
         try:
             raw_text = download_report_raw_text(api_key, candidate.rcept_no)
@@ -218,14 +222,24 @@ def collect_business_report(
             continue
 
         overview, status = extract_business_overview(raw_text)
-        return CollectedReport(
+        result = CollectedReport(
             rcept_no=candidate.rcept_no,
             raw_text=raw_text,
             business_overview=overview,
             parse_status=status,
         )
+        if status == "ok":
+            return result  # 완전 성공 → 즉시 반환
+        # partial or failed: 더 나은 후보가 있을 수 있으므로 계속 시도
+        if best_result is None or (
+            status == "partial" and best_result.parse_status == "failed"
+        ):
+            best_result = result
 
-    # 모든 후보가 실패함
+    if best_result is not None:
+        return best_result  # 다운로드는 성공했지만 파싱 최선 결과
+
+    # 모든 후보가 다운로드 실패
     assert last_error is not None
     raise last_error
 
