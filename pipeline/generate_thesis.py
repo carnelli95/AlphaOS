@@ -433,7 +433,10 @@ def _select_events_for_thesis(
 
     if finance_pool:
         anchor = sorted(finance_pool, key=_score, reverse=True)[0]
-        fill   = sorted(others, key=_score, reverse=True)
+        # 비-finance 우선(다양성), 이후 남은 finance 보충 — others가 비어도 슬롯 채움
+        remaining_finance = [f for f in finance_pool if f is not anchor]
+        fill = (sorted(others, key=_score, reverse=True)
+                + sorted(remaining_finance, key=_score, reverse=True))
     else:
         # fallback: 점수 최고 이벤트가 anchor
         all_sorted = sorted(pool, key=_score, reverse=True)
