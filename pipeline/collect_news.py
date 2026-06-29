@@ -1,15 +1,18 @@
 """
-뉴스 이벤트 수집기 — 네이버 뉴스 검색 API (MVP)
+뉴스 이벤트 수집기 — 네이버 뉴스 검색 API
 
-stage_d_sections fact 스키마와 동일한 구조로 정규화하여 반환.
+2단계 필터:
+  1. 규칙 기반 (Rule-based): 시장·업종 일반 뉴스 즉시 제거 (토큰 비용 없음)
+  2. LLM 관련성 필터 (Relevance): 기사 묶음을 한 번에 전송, 0~1 점수 반환
+     ≥ 0.75 → 채택 / 0.5~0.75 → 후보 / < 0.5 → 제거
+
+stage_d_sections fact 스키마와 동일한 구조로 정규화.
 source_type = "news" (SOURCE_PRIORITY = 60)
 
 사전 준비:
-  1. https://developers.naver.com/apps/ 에서 애플리케이션 등록
-  2. "검색" API 권한 추가
-  3. Client ID / Client Secret 발급 후 .env에 추가:
-     NAVER_CLIENT_ID=...
-     NAVER_CLIENT_SECRET=...
+  .env에 다음 추가:
+    NAVER_CLIENT_ID=...
+    NAVER_CLIENT_SECRET=...
 
 API 한도: 25,000 calls/day (검색 API)
 """
@@ -18,25 +21,34 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-# 네이버 뉴스 API 엔드포인트
-NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
+sys.path.insert(0, os.path.dirname(__file__))
+from generate_ai_report import call_llm
 
-# stage_d와 동일한 source_type 식별자
-SOURCE_TYPE = "news"
-
-# 검색 윈도우 (DART 수시공시와 동일하게 180일)
+NAVER_NEWS_URL    = "https://openapi.naver.com/v1/search/news.json"
+SOURCE_TYPE       = "news"
 DEFAULT_WINDOW_DAYS = 180
 
-# 종목명 + 키워드로 관련성 필터링
-_FINANCIAL_KEYWORDS = [
-    "계약", "수주", "공급", "합병", "분할", "증자", "자기주식", "배당",
-    "투자", "인수", "실적", "매출", "영업이익", "대표이사", "사장", "제재",
-    "소송", "파산", "회생", "신공장", "설비", "특허", "수출", "MOU",
+# ─── 1단계: 규칙 기반 제거 패턴 ────────────────────────────────────────
+# 제목에 이 패턴이 있으면 회사 직접 이벤트가 아닌 시장/업종 뉴스로 간주 → 즉시 제거
+_NOISE_TITLE_PATTERNS: list[str] = [
+    "코스피", "코스닥", "증시", "뉴욕증시", "나스닥", "다우존스",
+    "외국인 순매수", "외국인 순매도", "기관 순매수", "기관 순매도",
+    "업종 전반", "반도체 업황", "시장 전망", "증시 전망", "주식시장",
+    "개장 시황", "마감 시황", "오후장", "오전장", "장 초반",
+    "ETF", "레버리지 ETF", "공모펀드", "리포트", "애널리스트",
+    "투자의견", "목표주가", "목표 주가", "TP 상향", "TP 하향",
+    "주간 전망", "월간 전망", "글로벌 증시", "연준", "금리",
+    "환율", "유가", "원자재", "인플레이션",
 ]
+
+# ─── 2단계: LLM 관련성 임계값 ───────────────────────────────────────────
+RELEVANCE_THRESHOLD  = 0.75   # 이 이상만 채택
+CANDIDATE_THRESHOLD  = 0.50   # 이 미만은 즉시 제거
 
 
 def _parse_naver_date(pub_date: str) -> tuple[str, int]:
@@ -56,12 +68,94 @@ def _parse_naver_date(pub_date: str) -> tuple[str, int]:
 def _strip_html(text: str) -> str:
     """네이버 뉴스 제목/설명의 HTML 태그와 엔티티 제거."""
     text = re.sub(r"<[^>]+>", "", text)
-    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"')
+    text = (text.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&amp;", "&").replace("&quot;", '"'))
     return text.strip()
 
 
+def _rule_filter(company_name: str, title: str, desc: str) -> bool:
+    """
+    True → 1단계 통과 (LLM으로 넘길 후보)
+    False → 즉시 제거
+
+    기준:
+    - 제목에 회사명이 있어야 함 (회사를 단순 언급하는 기사 제외)
+    - 제목에 시장/업종 노이즈 패턴이 없어야 함
+    """
+    if company_name not in title:
+        return False
+    combined = title + " " + desc
+    if any(p in combined for p in _NOISE_TITLE_PATTERNS):
+        return False
+    return True
+
+
+def _llm_relevance_filter(
+    company_name: str,
+    articles: list[dict],  # [{"id": int, "title": str, "desc": str}, ...]
+) -> list[dict]:
+    """
+    LLM으로 기사 관련성 일괄 평가.
+    반환: [{"id": int, "relevance": float, "reason": str}, ...]
+    """
+    if not articles:
+        return []
+
+    items_block = "\n".join(
+        f'[{a["id"]}] 제목: {a["title"]}\n    설명: {a["desc"][:100]}'
+        for a in articles
+    )
+
+    prompt = f"""너는 뉴스 관련성 필터링 AI야.
+회사명: "{company_name}"
+
+아래 뉴스 기사들이 "{company_name}" 기업의 직접적인 이벤트와 관련 있는지 0~1 점수로 평가해.
+
+[채점 기준]
+- 1.0에 가까울수록: 회사 직접 이벤트 (계약 체결, 실적 발표, 임원 변경, 투자·설비 결정, 합병, 증자, 소송·제재)
+- 0.5 전후: 회사가 언급되나 산업 일반 논의, 시장 흐름 설명이 주목적
+- 0.0에 가까울수록: 회사는 부수적 언급, 시장 전반·업종 뉴스·증시 시황
+
+[기사 목록]
+{items_block}
+
+[출력 — 반드시 아래 JSON 형식, 다른 텍스트 절대 금지]
+{{"evaluations": [
+  {{"id": 번호, "relevance": 0.0~1.0, "reason": "판단 근거 한 줄"}}
+]}}"""
+
+    raw = call_llm(prompt)
+
+    # call_llm은 json_object 모드라 항상 dict 반환
+    # LLM이 사용하는 키 이름을 순서대로 시도
+    items: list = []
+    if isinstance(raw, dict):
+        for key in ("evaluations", "items", "results", "articles", "scores", "data"):
+            if key in raw and isinstance(raw[key], list):
+                items = raw[key]
+                break
+        else:
+            # fallback: dict 내 첫 번째 list 값
+            items = next((v for v in raw.values() if isinstance(v, list)), [])
+    elif isinstance(raw, list):
+        items = raw
+
+    results = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            results.append({
+                "id":        int(item["id"]),
+                "relevance": float(item.get("relevance", 0.0)),
+                "reason":    str(item.get("reason", "")),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return results
+
+
 def _classify_event_type(title: str, description: str) -> str:
-    """뉴스 제목/내용으로 event_type 분류."""
     combined = title + " " + description
     if any(k in combined for k in ["계약", "수주", "공급계약", "MOU"]):
         return "contract"
@@ -77,13 +171,10 @@ def _classify_event_type(title: str, description: str) -> str:
 
 
 def _classify_impact(title: str, description: str) -> str:
-    """뉴스 기사의 재무 영향도 추정 (보수적 기본값 low)."""
     combined = title + " " + description
-    high_keywords = ["합병", "인수", "유상증자", "대형 계약", "조 원", "억 달러"]
-    medium_keywords = ["수주", "계약", "배당", "자기주식", "투자"]
-    if any(k in combined for k in high_keywords):
+    if any(k in combined for k in ["합병", "인수", "유상증자", "대형 계약", "조 원", "억 달러"]):
         return "high"
-    if any(k in combined for k in medium_keywords):
+    if any(k in combined for k in ["수주", "계약", "배당", "자기주식", "투자"]):
         return "medium"
     return "low"
 
@@ -93,81 +184,122 @@ def fetch_news_events(
     client_id: str,
     client_secret: str,
     window_days: int = DEFAULT_WINDOW_DAYS,
-    max_items: int = 20,
+    max_fetch: int = 30,
+    verbose: bool = False,
 ) -> list[dict]:
     """
-    네이버 뉴스 API로 기업 관련 뉴스를 수집하고
-    stage_d_sections fact 형식으로 정규화하여 반환한다.
+    네이버 뉴스 API로 기업 관련 뉴스를 수집 → 2단계 필터 적용 → 정규화.
 
     반환 형식 (stage_d_sections facts와 동일):
     [
       {
-        "date":             "20260318",
-        "recency_days":     45,
-        "type":             "contract",
-        "fact":             "대형 공급계약 체결 보도",
-        "financial_impact": "medium",
-        "importance":       2,
-        "dart_id":          "",           # 뉴스는 dart_id 없음
+        "date":             "YYYYMMDD",
+        "recency_days":     int,
+        "type":             "contract|operations|management|finance|risk|other",
+        "fact":             "기사 제목 (최대 100자)",
+        "financial_impact": "none|low|medium|high",
+        "importance":       int(1~3),
+        "dart_id":          "",
         "source_type":      "news",
         "news_url":         "https://...",
+        "relevance":        float,   # LLM 관련성 점수
       }
     ]
+    최대 5개 반환.
     """
     headers = {
         "X-Naver-Client-Id":     client_id,
         "X-Naver-Client-Secret": client_secret,
     }
     params = {
-        "query":  company_name,
-        "display": min(max_items, 100),
+        "query":   company_name,
+        "display": min(max_fetch, 100),
         "start":   1,
         "sort":    "date",
     }
     try:
         resp = requests.get(NAVER_NEWS_URL, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        raw_items = resp.json().get("items", [])
     except Exception as exc:
         print(f"[collect_news] 네이버 API 오류: {exc}")
         return []
 
-    items = data.get("items", [])
-    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
-    facts: list[dict] = []
-
-    for item in items:
+    # ── 기간 필터 + 파싱 ──────────────────────────────────────────────
+    parsed: list[dict] = []
+    for item in raw_items:
         title = _strip_html(item.get("title", ""))
         desc  = _strip_html(item.get("description", ""))
-        pub   = item.get("pubDate", "")
-        url   = item.get("originallink") or item.get("link", "")
-
-        date_str, recency = _parse_naver_date(pub)
+        date_str, recency = _parse_naver_date(item.get("pubDate", ""))
         if recency > window_days:
             continue
-
-        # 재무·기업 관련성 필터 — 일반 뉴스 제외
-        combined = title + " " + desc
-        if not any(k in combined for k in _FINANCIAL_KEYWORDS):
-            continue
-
-        ev_type = _classify_event_type(title, desc)
-        impact  = _classify_impact(title, desc)
-
-        facts.append({
-            "date":             date_str,
-            "recency_days":     recency,
-            "type":             ev_type,
-            "fact":             title[:100],
-            "financial_impact": impact,
-            "importance":       2,          # 뉴스는 기본 중요도 2 (DART보다 보수적)
-            "dart_id":          "",
-            "source_type":      SOURCE_TYPE,
-            "news_url":         url,
+        parsed.append({
+            "title":    title,
+            "desc":     desc,
+            "date_str": date_str,
+            "recency":  recency,
+            "url":      item.get("originallink") or item.get("link", ""),
         })
 
-    # 중요도·최신성 순 정렬
-    facts.sort(key=lambda f: (f["recency_days"], -f.get("importance", 2)))
+    if verbose:
+        print(f"  [필터] API 수신: {len(raw_items)}건 → 기간내: {len(parsed)}건")
+
+    # ── 1단계: 규칙 기반 필터 ─────────────────────────────────────────
+    candidates = [a for a in parsed if _rule_filter(company_name, a["title"], a["desc"])]
+
+    if verbose:
+        removed_by_rule = len(parsed) - len(candidates)
+        print(f"  [필터 1단계] 규칙 기반 제거: {removed_by_rule}건 → 후보: {len(candidates)}건")
+        for a in candidates:
+            print(f"    • {a['title'][:70]}")
+
+    if not candidates:
+        return []
+
+    # ── 2단계: LLM 관련성 필터 ────────────────────────────────────────
+    llm_input = [{"id": i, "title": a["title"], "desc": a["desc"]}
+                 for i, a in enumerate(candidates)]
+    llm_results = _llm_relevance_filter(company_name, llm_input)
+
+    # id → relevance 매핑
+    rel_map = {r["id"]: r for r in llm_results}
+
+    if verbose:
+        print(f"  [필터 2단계] LLM 관련성 평가:")
+        for i, a in enumerate(candidates):
+            r = rel_map.get(i, {})
+            score = r.get("relevance", 0)
+            reason = r.get("reason", "")
+            mark = "✅" if score >= RELEVANCE_THRESHOLD else ("⚠" if score >= CANDIDATE_THRESHOLD else "❌")
+            print(f"    {mark} [{score:.2f}] {a['title'][:60]}")
+            if reason:
+                print(f"         → {reason}")
+
+    # ── 정규화 + 임계값 적용 ──────────────────────────────────────────
+    facts: list[dict] = []
+    for i, a in enumerate(candidates):
+        r = rel_map.get(i, {})
+        relevance = float(r.get("relevance", 0.0))
+        if relevance < RELEVANCE_THRESHOLD:
+            continue
+
+        title, desc = a["title"], a["desc"]
+        importance = 3 if relevance >= 0.9 else 2
+
+        facts.append({
+            "date":             a["date_str"],
+            "recency_days":     a["recency"],
+            "type":             _classify_event_type(title, desc),
+            "fact":             title[:100],
+            "financial_impact": _classify_impact(title, desc),
+            "importance":       importance,
+            "dart_id":          "",
+            "source_type":      SOURCE_TYPE,
+            "news_url":         a["url"],
+            "relevance":        round(relevance, 2),
+        })
+
+    facts.sort(key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)))
     return facts[:5]
 
 
@@ -176,42 +308,32 @@ def merge_with_dart_facts(
     news_facts: list[dict],
 ) -> list[dict]:
     """
-    DART facts와 뉴스 facts를 SOURCE_PRIORITY 기준으로 병합한다.
+    DART facts와 뉴스 facts를 병합한다.
 
     규칙:
-    - DART facts는 그대로 유지 (변경 없음)
+    - DART facts는 항상 먼저 (source_priority=100)
     - 뉴스 fact 중 같은 날짜(date) + 같은 type으로 DART fact가 이미 있으면 제외
-      (DART가 더 신뢰할 수 있으므로 news는 DART의 보완 역할만 수행)
-    - 뉴스끼리는 중복 제거하지 않음 (같은 날 여러 이벤트 허용)
-    - importance 내림차순 → recency_days 오름차순 정렬 후 최대 5개
+    - DART 슬롯 이후 남은 자리(max 5)를 뉴스로 채움
     """
-    # DART facts의 (date, type) 집합 — 뉴스 중복 체크용
     dart_keys: set[tuple] = {
         (f.get("date", ""), f.get("type", "other")) for f in dart_facts
     }
-
-    # DART에 없는 뉴스만 보완 대상으로 선택
     additional_news = [
         f for f in news_facts
         if (f.get("date", ""), f.get("type", "other")) not in dart_keys
     ]
 
-    # DART는 항상 먼저 → 남은 슬롯(최대 5-len(dart))을 뉴스로 채움
-    dart_sorted = sorted(
-        dart_facts,
-        key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)),
-    )
-    slots_left = max(0, 5 - len(dart_sorted))
-    news_sorted = sorted(
-        additional_news,
-        key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)),
-    )[:slots_left]
+    dart_sorted = sorted(dart_facts,
+                         key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)))
+    slots_left  = max(0, 5 - len(dart_sorted))
+    news_sorted = sorted(additional_news,
+                         key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)))
 
-    return (dart_sorted + news_sorted)[:5]
+    return (dart_sorted + news_sorted[:slots_left])[:5]
 
 
 if __name__ == "__main__":
-    import io, sys
+    import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     try:
@@ -228,8 +350,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     company = sys.argv[1] if len(sys.argv) > 1 else "삼성전자"
-    print(f"뉴스 수집: {company}")
-    events = fetch_news_events(company, CLIENT_ID, CLIENT_SECRET)
-    print(f"수집된 이벤트: {len(events)}개")
+    print(f"=== 뉴스 수집 + 2단계 필터: {company} ===\n")
+    events = fetch_news_events(company, CLIENT_ID, CLIENT_SECRET, verbose=True)
+    print(f"\n최종 채택: {len(events)}개")
     for e in events:
-        print(f"  [{e['date']}] +{e['recency_days']}일  [{e['type']}] {e['fact']}")
+        print(f"  [{e['date']}] [{e['relevance']:.2f}] [{e['type']}] {e['fact']}")
