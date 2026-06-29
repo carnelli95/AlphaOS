@@ -58,6 +58,15 @@ def build_extraction_prompt(company_name: str, business_overview: str) -> str:
 growth_catalysts / risk_factors / moat_hints는 반드시 "이 기업만의 구체적인 사실"이어야 한다.
 업종·산업 전체에 해당하는 일반론은 neutral_facts로만 분류. growth/risk/moat에 절대 포함 금지.
 
+🔑 경쟁사 테스트 (가장 중요한 필터):
+"이 문장을 경쟁사에 그대로 붙여넣어도 성립하는가?"
+→ 성립하면 neutral_facts로만. growth/risk/moat 불허.
+→ 성립하지 않아야만 growth/risk/moat 허용.
+
+[빈 리스트 규칙]
+기업 고유 사실이 없으면 growth_catalysts/risk_factors/moat_hints를 빈 배열([])로 반환.
+일반론으로 채워 넣지 말 것. 없으면 없는 것이 맞다.
+
 ❌ 산업 일반론 예시 (growth/risk/moat 금지 → neutral_facts):
   - "조선업은 전 세계가 단일 시장을 형성하고 있다"
   - "반도체 시장이 확대되고 있다"
@@ -68,10 +77,16 @@ growth_catalysts / risk_factors / moat_hints는 반드시 "이 기업만의 구�
   - "글로벌 경기가 둔화되고 있다"
 
 ✅ 기업 고유 사실 예시 (growth/risk/moat 허용):
-  - "[이 기업]이 정신신경용제 시장 점유율 1위를 확보했다" (growth)
-  - "[이 기업]의 특정 고객사가 전체 매출의 X%를 차지한다" (risk)
-  - "[이 기업]이 해당 분야 국내 유일 cGMP 인증 생산설비를 보유한다" (moat)
-  - "[이 기업]이 원유운반선·컨테이너선 등 제품군을 확대했다" (growth)
+  - "[이 기업]이 정신신경용제 시장 점유율 1위를 확보했다" (growth) ← 경쟁사에 붙여넣기 불가
+  - "[이 기업]의 특정 고객사가 전체 매출의 X%를 차지한다" (risk) ← 이 기업 고유 비중
+  - "[이 기업]이 해당 분야 국내 유일 cGMP 인증 생산설비를 보유한다" (moat) ← 유일
+  - "[이 기업]이 원유운반선·컨테이너선 등 제품군을 확대했다" (growth) ← 이 기업 행동
+
+❌ risk 일반론 추가 예시 (특히 많이 틀리는 패턴):
+  - "원재료 가격이 상승하고 있다" → neutral_facts (업종 공통)
+  - "글로벌 경기침체로 수요가 감소한다" → neutral_facts (업종 공통)
+  - "환율 변동이 실적에 영향을 줄 수 있다" → neutral_facts (업종 공통)
+  ✅ 올바른 risk: "[이 기업]의 상위 3개 고객이 전체 매출의 68%를 차지한다"
 
 [분류 기준]
 - growth_catalysts: 이 기업만의 성장 드라이버 (신사업/신제품 진출, 시장 점유율 확대, 핵심 제품 경쟁력 강화 등)
@@ -190,19 +205,67 @@ def _normalize_facts(lst: list, with_moat_type: bool = False) -> list:
     return out
 
 
+_GENERIC_KEYWORDS = (
+    "일반적으로", "통상적으로", "업계는", "시장에서는",
+    "업종 전체", "업계 전반", "업계 공통",
+    "전 세계적으로", "경쟁사도", "모든 기업이",
+    "친환경 수요가", "글로벌 경기", "고령화로 인해",
+    # 시장·업황 일반론 패턴 (복합어로 지정 — 단독 "업황"은 기업 맥락에서도 사용 가능)
+    "업황 회복",   # "업황 회복으로 실적 개선" — 항상 업종 전체 현상
+    "업황 개선",   # "업황 개선이 기대됨" — 항상 업종 전체 현상
+    "업황 호조",   # "업황 호조에 따른 수혜" — 항상 업종 전체 현상
+    "시장이 확대",  # "시장이 확대되고 있다" — 항상 시장 수준 일반론
+    "의 수혜가 예상",  # "시장 성장의 수혜가 예상된다" — 항상 미래 예측 일반론
+)
+
+
+def _validate_stage_c_facts(facts: dict) -> list[str]:
+    """
+    growth/risk/moat에 산업 일반론 키워드 탐지.
+    반환: 위반 설명 목록 (빈 리스트 = 통과).
+    """
+    violations = []
+    for cat in ("growth_catalysts", "risk_factors", "moat_hints"):
+        for item in (facts.get(cat) or []):
+            text = item.get("fact", "") if isinstance(item, dict) else str(item)
+            for kw in _GENERIC_KEYWORDS:
+                if kw in text:
+                    violations.append(f"{cat}: '{kw}'")
+    return violations
+
+
 def extract_stage_c_facts(company_name: str, business_overview: str) -> dict:
-    """Step 1: 사업보고서 원문 → 구조화된 facts (각 항목은 {fact, source_quote} object)."""
+    """Step 1: 사업보고서 원문 → 구조화된 facts. 산업 일반론 감지 시 1회 재시도."""
+    _EMPTY: dict = {"growth_catalysts": [], "risk_factors": [], "neutral_facts": [], "moat_hints": []}
+    _RETRY_HINT = (
+        "\n\n[재생성 경고] 이전 응답의 growth/risk/moat에 산업 일반론이 감지됐습니다."
+        " 경쟁사에도 그대로 적용되는 문장은 neutral_facts로만 이동하고,"
+        " growth/risk/moat에는 이 기업만의 구체적 사실만 사용하십시오."
+        " 기업 고유 사실이 없으면 해당 항목을 빈 배열([])로 반환하십시오."
+    )
     prompt = build_extraction_prompt(company_name, business_overview)
-    try:
-        result = call_llm(prompt)
-        return {
-            "growth_catalysts": _normalize_facts(result.get("growth_catalysts")),
-            "risk_factors":     _normalize_facts(result.get("risk_factors")),
-            "neutral_facts":    _normalize_facts(result.get("neutral_facts")),
-            "moat_hints":       _normalize_facts(result.get("moat_hints"), with_moat_type=True),
-        }
-    except Exception:
-        return {"growth_catalysts": [], "risk_factors": [], "neutral_facts": [], "moat_hints": []}
+    facts: dict = _EMPTY.copy()
+    violations: list[str] = []
+
+    for attempt in range(2):  # 최초 1회 + 재시도 1회
+        call_prompt = prompt if attempt == 0 else prompt + _RETRY_HINT
+        try:
+            result = call_llm(call_prompt)
+            facts = {
+                "growth_catalysts": _normalize_facts(result.get("growth_catalysts")),
+                "risk_factors":     _normalize_facts(result.get("risk_factors")),
+                "neutral_facts":    _normalize_facts(result.get("neutral_facts")),
+                "moat_hints":       _normalize_facts(result.get("moat_hints"), with_moat_type=True),
+            }
+            violations = _validate_stage_c_facts(facts)
+            if not violations:
+                break
+        except Exception:
+            return _EMPTY
+
+    if violations:
+        print(f"  ⚠ Stage C 일반론 감지 (2회 후 유지): {violations[:3]}")
+    return facts
 
 
 def save_stage_c(engine, stock_code: str, llm_result: dict) -> None:
