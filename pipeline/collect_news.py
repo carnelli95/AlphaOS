@@ -344,11 +344,17 @@ def fetch_news_events(
         title, desc = a["title"], a["desc"]
         importance  = 3 if relevance >= 0.9 else 2
 
+        # event_weight: 기준 = earnings/capex/regulation = 1.0 (÷4 정규화)
+        # weighted_score = relevance × event_weight — LLM 재호출 없이 재계산 가능
+        raw_weight     = EVENT_TYPE_WEIGHT.get(event_type, 1)
+        event_weight   = round(raw_weight / 4, 3)
+        weighted_score = round(relevance * event_weight, 3)
+
         facts.append({
             "date":             a["date_str"],
             "recency_days":     a["recency"],
             "type":             _classify_event_type(title, desc),
-            "event_type":       event_type,          # LLM 분류 — 가중치 활용용
+            "event_type":       event_type,
             "fact":             title[:100],
             "financial_impact": _classify_impact(title, desc),
             "importance":       importance,
@@ -356,9 +362,11 @@ def fetch_news_events(
             "source_type":      SOURCE_TYPE,
             "news_url":         a["url"],
             "relevance":        round(relevance, 2),
+            "event_weight":     event_weight,
+            "weighted_score":   weighted_score,
         })
 
-    facts.sort(key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)))
+    facts.sort(key=lambda f: (-f.get("weighted_score", 0), f.get("recency_days", 9999)))
     return facts[:5]
 
 
