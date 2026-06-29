@@ -345,10 +345,13 @@ def fetch_news_events(
         importance  = 3 if relevance >= 0.9 else 2
 
         # event_weight: 기준 = earnings/capex/regulation = 1.0 (÷4 정규화)
-        # weighted_score = relevance × event_weight — LLM 재호출 없이 재계산 가능
-        raw_weight     = EVENT_TYPE_WEIGHT.get(event_type, 1)
-        event_weight   = round(raw_weight / 4, 3)
-        weighted_score = round(relevance * event_weight, 3)
+        # event_confidence = relevance: LLM 분류 불확실성 패널티
+        #   → weighted_score = relevance² × event_weight
+        #   → 높은 relevance(0.95) → 패널티 미미, 낮은 relevance(0.76) → 자동 감점
+        raw_weight        = EVENT_TYPE_WEIGHT.get(event_type, 1)
+        event_weight      = round(raw_weight / 4, 3)
+        event_confidence  = round(relevance, 2)       # LLM 분류 확신도 = relevance
+        weighted_score    = round(relevance * event_weight * event_confidence, 3)
 
         facts.append({
             "date":             a["date_str"],
@@ -362,12 +365,22 @@ def fetch_news_events(
             "source_type":      SOURCE_TYPE,
             "news_url":         a["url"],
             "relevance":        round(relevance, 2),
+            "event_confidence": event_confidence,
             "event_weight":     event_weight,
             "weighted_score":   weighted_score,
         })
 
+    # weighted_score 내림차순 정렬 후 event diversity 적용
+    # — 동일 event_type 최대 2개: major_contract 3건이 상위를 독점하는 현상 방지
     facts.sort(key=lambda f: (-f.get("weighted_score", 0), f.get("recency_days", 9999)))
-    return facts[:5]
+    seen: Counter = Counter()
+    diverse: list[dict] = []
+    for f in facts:
+        et = f.get("event_type", "other")
+        if seen[et] < 2:
+            diverse.append(f)
+            seen[et] += 1
+    return diverse[:5]
 
 
 def merge_with_dart_facts(
