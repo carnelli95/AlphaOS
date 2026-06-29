@@ -201,6 +201,26 @@ def generate_stage_d_for_stock(
 
 
 def _save_stage_d(engine, stock_code: str, data: dict) -> None:
+    # 기존 비-DART facts(news, ir 등) 보존 — DART 재생성 시 뉴스 데이터 유실 방지
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT stage_d_sections FROM ai_reports WHERE stock_code = :c"),
+            {"c": stock_code},
+        ).fetchone()
+
+    preserved: list[dict] = []
+    if row and row[0]:
+        preserved = [
+            f for f in (row[0].get("facts") or [])
+            if f.get("source_type", "dart") != "dart"
+        ]
+
+    dart_facts: list[dict] = data.get("facts", [])
+    slots_left = max(0, 5 - len(dart_facts))
+    all_facts  = dart_facts + preserved[:slots_left]
+
+    data = dict(data, facts=all_facts, fact_count=len(all_facts))
+
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO ai_reports (stock_code, stage_d_sections)

@@ -119,7 +119,7 @@ def fetch_news_events(
         "X-Naver-Client-Secret": client_secret,
     }
     params = {
-        "query":  f"{company_name} 주식",
+        "query":  company_name,
         "display": min(max_items, 100),
         "start":   1,
         "sort":    "date",
@@ -178,25 +178,36 @@ def merge_with_dart_facts(
     """
     DART facts와 뉴스 facts를 SOURCE_PRIORITY 기준으로 병합한다.
 
-    - 같은 날짜(date)에 동일 type 이벤트가 존재하면 priority 높은 소스 우선
-    - 중복이 없으면 두 목록을 합쳐 importance → recency_days 순으로 정렬
-    - 최대 5개 반환 (Thesis 생성기 제약)
+    규칙:
+    - DART facts는 그대로 유지 (변경 없음)
+    - 뉴스 fact 중 같은 날짜(date) + 같은 type으로 DART fact가 이미 있으면 제외
+      (DART가 더 신뢰할 수 있으므로 news는 DART의 보완 역할만 수행)
+    - 뉴스끼리는 중복 제거하지 않음 (같은 날 여러 이벤트 허용)
+    - importance 내림차순 → recency_days 오름차순 정렬 후 최대 5개
     """
-    from generate_stage_d import SOURCE_PRIORITY
+    # DART facts의 (date, type) 집합 — 뉴스 중복 체크용
+    dart_keys: set[tuple] = {
+        (f.get("date", ""), f.get("type", "other")) for f in dart_facts
+    }
 
-    def priority(f: dict) -> int:
-        return SOURCE_PRIORITY.get(f.get("source_type", "dart"), 0)
+    # DART에 없는 뉴스만 보완 대상으로 선택
+    additional_news = [
+        f for f in news_facts
+        if (f.get("date", ""), f.get("type", "other")) not in dart_keys
+    ]
 
-    merged: dict[tuple, dict] = {}
-    for f in dart_facts + news_facts:
-        key = (f.get("date", ""), f.get("type", "other"))
-        existing = merged.get(key)
-        if existing is None or priority(f) > priority(existing):
-            merged[key] = f
+    # DART는 항상 먼저 → 남은 슬롯(최대 5-len(dart))을 뉴스로 채움
+    dart_sorted = sorted(
+        dart_facts,
+        key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)),
+    )
+    slots_left = max(0, 5 - len(dart_sorted))
+    news_sorted = sorted(
+        additional_news,
+        key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)),
+    )[:slots_left]
 
-    result = list(merged.values())
-    result.sort(key=lambda f: (-f.get("importance", 2), f.get("recency_days", 9999)))
-    return result[:5]
+    return (dart_sorted + news_sorted)[:5]
 
 
 if __name__ == "__main__":
