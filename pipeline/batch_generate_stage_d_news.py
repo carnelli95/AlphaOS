@@ -12,6 +12,10 @@ Stage D 뉴스 배치 실행기
   python batch_generate_stage_d_news.py --limit 10       # 검증
   python batch_generate_stage_d_news.py                  # 전체
   python batch_generate_stage_d_news.py --force          # 전체 재생성
+
+[news=0은 실패가 아님]
+  소형주·최근 공시만 있는 종목은 관련 뉴스가 없을 수 있음.
+  "뉴스 없음"은 정상 케이스이며 오류로 처리하지 않음.
 """
 from __future__ import annotations
 
@@ -57,7 +61,7 @@ def _load_targets(engine, force: bool, limit: int | None) -> list[tuple]:
                 ORDER BY r.stock_code
             """)).fetchall()
         else:
-            # news facts가 없는 종목만 — jsonb_path_exists로 source_type=news 확인
+            # news facts가 없는 종목만 — source_type=news 확인
             rows = conn.execute(text("""
                 SELECT r.stock_code, s.name
                 FROM ai_reports r
@@ -79,6 +83,11 @@ def _load_targets(engine, force: bool, limit: int | None) -> list[tuple]:
     return result
 
 
+def _fmt_duration(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s:02d}s"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--force",  action="store_true", help="기존 news facts도 재생성")
@@ -90,51 +99,81 @@ def main() -> None:
         print("❌ NAVER_CLIENT_ID 없음. .env 확인.")
         sys.exit(1)
 
-    engine = get_engine()
+    engine  = get_engine()
     targets = _load_targets(engine, force=args.force, limit=args.limit)
+    total   = len(targets)
 
     print(f"=== Stage D 뉴스 배치 ===")
-    print(f"대상: {len(targets)}개 | force={args.force} | sleep={args.sleep}s")
-    print(f"시작: {datetime.now().isoformat()}\n")
+    print(f"대상: {total}개 | force={args.force} | sleep={args.sleep}s")
+    print(f"시작: {datetime.now().strftime('%H:%M:%S')}\n")
+
+    batch_start = time.time()
 
     ok = err = skipped = 0
-    news_added = Counter()   # news가 몇 개 추가된 종목 카운트
+    total_dart  = 0
+    total_news  = 0
+    news_dist   = Counter()   # news=N개 종목 수 분포
+    elapsed_list: list[float] = []
 
     for i, (code, name) in enumerate(targets, 1):
-        prefix = f"[{i:4d}/{len(targets)}]"
+        prefix    = f"[{i:4d}/{total}]"
+        t0        = time.time()
         try:
             result = add_news_to_stage_d(engine, code)
+            elapsed = time.time() - t0
 
             if result is None:
-                print(f"{prefix} ⚠  {name}({code}): 건너뜀")
+                print(f"{prefix} ⚠  {name}({code}): 건너뜀  ({elapsed:.1f}s)")
                 skipped += 1
             else:
-                facts    = result.get("facts", [])
-                n_dart   = sum(1 for f in facts if f.get("source_type", "dart") == "dart")
-                n_news   = sum(1 for f in facts if f.get("source_type") == "news")
-                news_added[n_news] += 1
+                facts  = result.get("facts", [])
+                n_dart = sum(1 for f in facts if f.get("source_type", "dart") == "dart")
+                n_news = sum(1 for f in facts if f.get("source_type") == "news")
+
+                total_dart += n_dart
+                total_news += n_news
+                news_dist[n_news] += 1
                 ok += 1
+                elapsed_list.append(elapsed)
+
                 if n_news > 0:
-                    print(f"{prefix} ✅  {name}({code}): dart={n_dart} news={n_news} total={len(facts)}")
+                    print(f"{prefix} ✅  {name}({code}): dart={n_dart} news={n_news} total={len(facts)}  ({elapsed:.1f}s)")
                 else:
-                    print(f"{prefix} —  {name}({code}): news 없음")
+                    print(f"{prefix} —  {name}({code}): news 없음  ({elapsed:.1f}s)")
 
         except Exception as exc:
-            print(f"{prefix} ❌  {name}({code}): {exc}")
+            elapsed = time.time() - t0
+            print(f"{prefix} ❌  {name}({code}): {exc}  ({elapsed:.1f}s)")
             err += 1
 
-        if i < len(targets):
+        if i < total:
             time.sleep(args.sleep)
 
-    print(f"\n=== 완료 ===")
-    print(f"성공: {ok} | 오류: {err} | 건너뜀: {skipped}")
-    print(f"종료: {datetime.now().isoformat()}")
+    # ── 최종 통계 ────────────────────────────────────────────────────────
+    wall_time    = time.time() - batch_start
+    avg_elapsed  = sum(elapsed_list) / len(elapsed_list) if elapsed_list else 0
+    stocks_with_news = total - news_dist.get(0, 0) - err - skipped
+    avg_news_per_co  = total_news / ok if ok else 0
 
-    if news_added:
-        print(f"\n뉴스 추가 분포:")
-        for n_news in sorted(news_added.keys()):
-            label = f"news={n_news}개" if n_news > 0 else "뉴스 없음(0개)"
-            print(f"  {label}: {news_added[n_news]}종목")
+    print(f"\n{'=' * 44}")
+    print(f"=== 완료  {datetime.now().strftime('%H:%M:%S')} ===")
+    print(f"{'=' * 44}")
+    print(f"  성공: {ok:>5}  |  오류: {err}  |  건너뜀: {skipped}")
+    print()
+    print(f"  DART facts 합계:  {total_dart:>5}개")
+    print(f"  News facts 합계:  {total_news:>5}개")
+    print(f"  평균 news/종목:   {avg_news_per_co:>5.2f}개")
+    print()
+    print(f"  뉴스 분포:")
+    for n in sorted(news_dist.keys()):
+        label  = f"{n}개" if n > 0 else "없음"
+        bar    = "█" * min(news_dist[n] // max(1, ok // 30), 20)
+        print(f"    news={label:<3}  {news_dist[n]:>5}종목  {bar}")
+    print()
+    print(f"  총 실행시간:      {_fmt_duration(wall_time)}")
+    print(f"  평균 처리시간:    {avg_elapsed:.2f}s/종목")
+    if elapsed_list:
+        print(f"  최대 처리시간:    {max(elapsed_list):.2f}s  (느린 종목 확인 권장)")
 
 
 if __name__ == "__main__":
