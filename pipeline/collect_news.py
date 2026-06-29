@@ -90,13 +90,47 @@ def _rule_filter(company_name: str, title: str, desc: str) -> bool:
     return True
 
 
+# event_type 정의 — 점수 구간과 1:1 대응
+# Stage E·랭킹에서 LLM 재호출 없이 타입별 가중치 적용 가능
+NEWS_EVENT_TYPES = {
+    "major_contract",    # 대규모 수주·공급계약  (0.85+)
+    "earnings",          # 실적 발표            (0.85+)
+    "capex",             # 공장·설비 증설·투자   (0.85+)
+    "acquisition",       # M&A·합병·분할        (0.85+)
+    "fundraising",       # 유상증자·CB·자회사IPO (0.85+)
+    "regulation",        # 규제 승인·제재·소송   (0.85+)
+    "product_launch",    # 신제품·서비스 출시    (0.5~0.84)
+    "executive_comment", # 경영진 전략 인터뷰    (0.5~0.84)
+    "partnership",       # MOU·파트너십(소규모)  (0.5~0.84)
+    "restructuring",     # 구조조정·인원 감축    (0.5~0.84)
+    "other",             # 위 분류 외            (any)
+    "noise",             # 제거 대상             (0.0~0.49)
+}
+
+# 이벤트 유형별 투자 중요도 가중치 (Stage E 활용 예정)
+EVENT_TYPE_WEIGHT: dict[str, int] = {
+    "major_contract":    5,
+    "earnings":          4,
+    "capex":             4,
+    "acquisition":       5,
+    "fundraising":       3,
+    "regulation":        4,
+    "product_launch":    2,
+    "executive_comment": 1,
+    "partnership":       2,
+    "restructuring":     2,
+    "other":             1,
+    "noise":             0,
+}
+
+
 def _llm_relevance_filter(
     company_name: str,
     articles: list[dict],  # [{"id": int, "title": str, "desc": str}, ...]
 ) -> list[dict]:
     """
     LLM으로 기사 관련성 일괄 평가.
-    반환: [{"id": int, "relevance": float, "reason": str}, ...]
+    반환: [{"id": int, "relevance": float, "event_type": str, "reason": str}, ...]
     """
     if not articles:
         return []
@@ -127,12 +161,16 @@ def _llm_relevance_filter(
   업계 일반 동향(기업이 사례로만 언급), 주가·시황 기사,
   애널리스트 목표주가 변경, 내용 없는 단순 인터뷰
 
+[event_type 값 (반드시 아래 중 하나만 사용)]
+major_contract | earnings | capex | acquisition | fundraising | regulation |
+product_launch | executive_comment | partnership | restructuring | other | noise
+
 [기사 목록]
 {items_block}
 
 [출력 — 반드시 아래 JSON 형식, 다른 텍스트 절대 금지]
 {{"evaluations": [
-  {{"id": 번호, "relevance": 0.0~1.0, "reason": "채택/제거 근거 한 줄 (이벤트 유형 명시)"}}
+  {{"id": 번호, "relevance": 0.0~1.0, "event_type": "위 목록 중 하나", "reason": "채택/제거 근거 한 줄"}}
 ]}}"""
 
     raw = call_llm(prompt)
@@ -156,10 +194,14 @@ def _llm_relevance_filter(
         if not isinstance(item, dict):
             continue
         try:
+            event_type = str(item.get("event_type", "other"))
+            if event_type not in NEWS_EVENT_TYPES:
+                event_type = "other"
             results.append({
-                "id":        int(item["id"]),
-                "relevance": float(item.get("relevance", 0.0)),
-                "reason":    str(item.get("reason", "")),
+                "id":         int(item["id"]),
+                "relevance":  float(item.get("relevance", 0.0)),
+                "event_type": event_type,
+                "reason":     str(item.get("reason", "")),
             })
         except (KeyError, ValueError, TypeError):
             continue
@@ -279,28 +321,34 @@ def fetch_news_events(
         print(f"  [필터 2단계] LLM 관련성 평가:")
         for i, a in enumerate(candidates):
             r = rel_map.get(i, {})
-            score = r.get("relevance", 0)
-            reason = r.get("reason", "")
+            score      = r.get("relevance", 0)
+            event_type = r.get("event_type", "other")
+            reason     = r.get("reason", "")
             mark = "✅" if score >= RELEVANCE_THRESHOLD else ("⚠" if score >= CANDIDATE_THRESHOLD else "❌")
-            print(f"    {mark} [{score:.2f}] {a['title'][:60]}")
+            print(f"    {mark} [{score:.2f}] [{event_type}] {a['title'][:55]}")
             if reason:
                 print(f"         → {reason}")
 
     # ── 정규화 + 임계값 적용 ──────────────────────────────────────────
     facts: list[dict] = []
     for i, a in enumerate(candidates):
-        r = rel_map.get(i, {})
-        relevance = float(r.get("relevance", 0.0))
+        r          = rel_map.get(i, {})
+        relevance  = float(r.get("relevance", 0.0))
         if relevance < RELEVANCE_THRESHOLD:
             continue
 
+        event_type = r.get("event_type", "other")
+        if event_type not in NEWS_EVENT_TYPES:
+            event_type = "other"
+
         title, desc = a["title"], a["desc"]
-        importance = 3 if relevance >= 0.9 else 2
+        importance  = 3 if relevance >= 0.9 else 2
 
         facts.append({
             "date":             a["date_str"],
             "recency_days":     a["recency"],
             "type":             _classify_event_type(title, desc),
+            "event_type":       event_type,          # LLM 분류 — 가중치 활용용
             "fact":             title[:100],
             "financial_impact": _classify_impact(title, desc),
             "importance":       importance,
