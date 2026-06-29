@@ -667,6 +667,7 @@ def _validate_thesis(
 # ─── Attribution 재시도 통계 (batch 집계용) ──────────────────────────────────────
 
 _retry_stats: dict[str, int] = {"retried": 0, "permanent_fail": 0}
+_retry_stocks: list[str] = []   # validator 개입 종목 코드 (QA 샘플용)
 
 
 # ─── 데이터 로드 / 저장 ───────────────────────────────────────────────────────────
@@ -761,6 +762,7 @@ def generate_thesis_for_stock(
             break
         if attempt == 0:
             _retry_stats["retried"] += 1
+            _retry_stocks.append(stock_code)
         if verbose:
             print(f"  ⚠ attribution validation 실패 (시도 {attempt + 1}/3): {violations}")
 

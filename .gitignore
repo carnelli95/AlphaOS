@@ -21,6 +21,7 @@ build/
 # 일회성 배치 코드 파일
 codes.txt
 dart0_news_only.txt
+thesis_retry_stocks.txt
 
 # Celery
 celerybeat-schedule.*

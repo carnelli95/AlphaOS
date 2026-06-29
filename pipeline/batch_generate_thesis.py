@@ -148,6 +148,13 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
         print(f"재시도 발생:   {rs['retried']}건 / {success_count}건 ({retry_rate:.1f}%)")
         print(f"영구 실패:     {rs['permanent_fail']}건  ← 목표 0건")
 
+        retry_stocks = _thesis_mod._retry_stocks
+        if retry_stocks:
+            out_path = "thesis_retry_stocks.txt"
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(retry_stocks))
+            print(f"재시도 종목 목록 → {out_path} ({len(retry_stocks)}건, QA 샘플용)")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Investment Thesis 배치 생성")
