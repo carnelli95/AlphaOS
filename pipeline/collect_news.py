@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
