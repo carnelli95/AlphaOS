@@ -635,6 +635,35 @@ def _safe_parse(raw: dict) -> dict:
     }
 
 
+# ─── 출처 귀인 검증 ──────────────────────────────────────────────────────────────
+
+def _validate_thesis(
+    thesis: dict,
+    stage_c_dart_count: int,
+    stage_d_dart_count: int,
+) -> list[str]:
+    """
+    출처 귀인 오류 검증.
+
+    Stage C(사업보고서)와 Stage D 모두 DART 출처가 없는 종목에서
+    'DART에서', '사업보고서에는' 등이 등장하면 위반으로 처리.
+
+    반환: 위반 설명 목록. 빈 리스트 = 통과.
+    """
+    if stage_c_dart_count > 0 or stage_d_dart_count > 0:
+        return []  # DART 출처가 하나라도 있으면 검사 불필요
+
+    ip      = thesis.get("investment_point") or ""
+    summary = thesis.get("summary") or ""
+    text    = ip + " " + summary
+
+    violations = []
+    for w in ("DART에서", "사업보고서에는", "공시에서", "공시에 따르면"):
+        if w in text:
+            violations.append(f"'{w}'")
+    return violations
+
+
 # ─── 데이터 로드 / 저장 ───────────────────────────────────────────────────────────
 
 def load_thesis_inputs(engine, stock_code: str) -> tuple[str | None, dict, dict, dict, dict]:
@@ -694,7 +723,21 @@ def generate_thesis_for_stock(
     reason_graph = build_reason_graph(alpha_score, stage_b, stage_c)
     confidence   = compute_confidence(reason_graph, stage_b)
 
-    # 2. LLM 텍스트 합성
+    # Validation용 DART 출처 카운트
+    stage_c_dart_cnt = confidence["dart_count"]
+    stage_d_dart_cnt = sum(
+        1 for f in (stage_d or {}).get("facts", [])
+        if f.get("source_type", "dart") == "dart"
+    )
+
+    # 2. LLM 텍스트 합성 (attribution validation 실패 시 최대 2회 재시도)
+    _RETRY_HINT = (
+        "\n\n[재생성 경고] 이전 응답에서 출처 귀인 오류 발생."
+        " 이 종목은 DART 공시·사업보고서 데이터가 없고 Stage D 이벤트가 모두 [뉴스기사] 출처입니다."
+        " investment_point와 summary에서 'DART에서', '사업보고서에는', '공시에서' 표현 절대 금지."
+        " 반드시 '뉴스에서'로만 표현하십시오."
+    )
+
     prompt = build_thesis_prompt(name, alpha_score, stage_b, stage_c, stage_d)
     if verbose:
         print(f"\n--- 프롬프트 ({len(prompt)}자) ---")
@@ -702,8 +745,20 @@ def generate_thesis_for_stock(
         if len(prompt) > 3000:
             print(f"  ... (생략, 총 {len(prompt)}자)")
 
-    raw    = call_llm(prompt)
-    thesis = _safe_parse(raw)
+    violations: list[str] = []
+    thesis: dict = {}
+    for attempt in range(3):  # 최초 1회 + 재시도 최대 2회
+        call_prompt = prompt if attempt == 0 else prompt + _RETRY_HINT
+        raw    = call_llm(call_prompt)
+        thesis = _safe_parse(raw)
+        violations = _validate_thesis(thesis, stage_c_dart_cnt, stage_d_dart_cnt)
+        if not violations:
+            break
+        if verbose:
+            print(f"  ⚠ attribution validation 실패 (시도 {attempt + 1}/3): {violations}")
+
+    if violations:
+        print(f"  ⚠ {name}({stock_code}): attribution 오류 3회 시도 후 미해결: {violations}")
 
     if verbose:
         print("\n--- LLM 응답 ---")
