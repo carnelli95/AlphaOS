@@ -415,18 +415,35 @@ def _select_events_for_thesis(
     4. 나머지는 weighted_score(news) / importance(dart) 내림차순으로 채움
     5. max_events 초과 제거
     """
-    non_dup_news = [
-        n for n in news_facts
-        if not any(_is_same_event(d, n) for d in dart_facts)
-        and n.get("event_weight", 0) > 0
-    ]
-    pool = dart_facts + non_dup_news
-
     def _score(f: dict) -> float:
         ws = f.get("weighted_score")
         if ws is not None:
             return float(ws)
         return float(f.get("importance", 1)) / 3
+
+    def _parse_date(f: dict) -> date:
+        try:
+            return datetime.strptime(str(f.get("date", "19000101")), "%Y%m%d").date()
+        except ValueError:
+            return date(1900, 1, 1)
+
+    # 1. DART↔News dedup
+    non_dup_news = [
+        n for n in news_facts
+        if not any(_is_same_event(d, n) for d in dart_facts)
+        and n.get("event_weight", 0) > 0
+    ]
+    # 2. News↔News dedup: 같은 날짜±1일 + 같은 클러스터 → weighted_score 최고 1개만 유지
+    deduped_news: list[dict] = []
+    for n in sorted(non_dup_news, key=_score, reverse=True):
+        already = any(
+            _event_cluster(n) == _event_cluster(kept)
+            and abs((_parse_date(n) - _parse_date(kept)).days) <= 1
+            for kept in deduped_news
+        )
+        if not already:
+            deduped_news.append(n)
+    pool = dart_facts + deduped_news
 
     finance_pool = [f for f in pool if _event_cluster(f) == "finance"]
     others       = [f for f in pool if f not in finance_pool]
