@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 
 from dotenv import load_dotenv
 from sqlalchemy import text
@@ -352,52 +352,149 @@ def _fmt_dart(stage_c: dict) -> str:
     return "\n".join(lines) if lines else "[사업보고서 분석]\n  (Fact 없음)"
 
 
+# ─── Stage D 이벤트 선택 (결정론적, LLM 개입 없음) ──────────────────────────────
+
+# DART type / News event_type → 의미론적 클러스터
+# 동일 클러스터면 dedup 대상으로 간주
+_TYPE_CLUSTER: dict[str, str] = {
+    # DART types
+    "contract":    "contract",
+    "operations":  "operations",
+    "management":  "management",
+    "finance":     "finance",
+    "risk":        "risk",
+    "other":       "other",
+    # News event_types
+    "major_contract":    "contract",
+    "earnings":          "finance",
+    "capex":             "operations",
+    "acquisition":       "management",
+    "fundraising":       "finance",
+    "regulation":        "risk",
+    "product_launch":    "other",
+    "executive_comment": "management",
+    "partnership":       "contract",
+    "restructuring":     "management",
+    "noise":             "other",
+}
+
+
+def _event_cluster(fact: dict) -> str:
+    """event_type(뉴스) 또는 type(DART)을 의미론적 클러스터로 변환."""
+    key = fact.get("event_type") or fact.get("type", "other")
+    return _TYPE_CLUSTER.get(key, "other")
+
+
+def _is_same_event(dart_f: dict, news_f: dict) -> bool:
+    """
+    DART fact와 News fact가 동일 이벤트인지 판정.
+    기준: 날짜 ±1일(datetime 기반) AND 동일 의미 클러스터
+    """
+    try:
+        d = datetime.strptime(str(dart_f.get("date", "")), "%Y%m%d").date()
+        n = datetime.strptime(str(news_f.get("date", "")), "%Y%m%d").date()
+        date_close = abs((d - n).days) <= 1
+    except ValueError:
+        date_close = False
+    return date_close and (_event_cluster(dart_f) == _event_cluster(news_f))
+
+
+def _select_events_for_thesis(
+    dart_facts: list[dict],
+    news_facts: list[dict],
+    max_events: int = 3,
+) -> list[dict]:
+    """
+    Thesis 서술에 포함할 이벤트를 결정론적으로 선택한다. LLM 개입 없음.
+
+    규칙:
+    1. DART 우선 dedup: News fact 중 DART와 동일 이벤트(±1일+클러스터)인 것 제거
+    2. noise 제거: event_weight=0 인 News fact 제거
+    3. earnings anchor: finance 클러스터 이벤트를 슬롯 1에 고정
+       → earnings 없으면 weighted_score 최고 이벤트가 fallback으로 anchor
+    4. 나머지는 weighted_score(news) / importance(dart) 내림차순으로 채움
+    5. max_events 초과 제거
+    """
+    non_dup_news = [
+        n for n in news_facts
+        if not any(_is_same_event(d, n) for d in dart_facts)
+        and n.get("event_weight", 0) > 0
+    ]
+    pool = dart_facts + non_dup_news
+
+    def _score(f: dict) -> float:
+        ws = f.get("weighted_score")
+        if ws is not None:
+            return float(ws)
+        return float(f.get("importance", 1)) / 3
+
+    finance_pool = [f for f in pool if _event_cluster(f) == "finance"]
+    others       = [f for f in pool if f not in finance_pool]
+
+    if finance_pool:
+        anchor = sorted(finance_pool, key=_score, reverse=True)[0]
+        fill   = sorted(others, key=_score, reverse=True)
+    else:
+        # fallback: 점수 최고 이벤트가 anchor
+        all_sorted = sorted(pool, key=_score, reverse=True)
+        anchor     = all_sorted[0] if all_sorted else None
+        fill       = all_sorted[1:] if anchor else []
+
+    selected = [anchor] if anchor else []
+    selected += fill[:max_events - len(selected)]
+    return selected[:max_events]
+
+
 def _fmt_stage_d(stage_d: dict) -> str:
-    """Stage D 최근 이벤트 블록 포맷 (Thesis 프롬프트 보강용)."""
+    """
+    Stage D 이벤트 블록 포맷 (Thesis 프롬프트 보강용).
+
+    _select_events_for_thesis()로 결정론적 선택 후 직렬화.
+    LLM에게는 이미 선별된 목록만 전달 — 재선택 재량 없음.
+    """
     if not stage_d:
         return ""
-    facts = stage_d.get("facts", [])
+    all_facts = stage_d.get("facts", [])
+    if not all_facts:
+        return ""
+
+    dart_facts = [f for f in all_facts if f.get("source_type", "dart") == "dart"]
+    news_facts = [f for f in all_facts if f.get("source_type") == "news"]
+    facts      = _select_events_for_thesis(dart_facts, news_facts)
     if not facts:
         return ""
 
-    lines = [f"[최근 주요 이벤트 (Stage D) — Stage C를 보강하는 최신 정보. 기존 투자 논리 변경 금지]"]
+    lines = [
+        "[최근 주요 이벤트 (Stage D) — 아래 목록은 코드 레벨에서 이미 선별 완료]",
+        "[절대 규칙: 목록 재선택·제외·재배열 금지. 각 이벤트를 1~2문장 사실형으로 압축.]",
+    ]
     for i, f in enumerate(facts):
-        date_str    = f.get("date", "")
-        recency     = f.get("recency_days", "?")
-        ev_type     = f.get("type", "other")
-        fact_text   = f.get("fact", "")
-        impact      = f.get("financial_impact", "low")
-        imp         = f.get("importance", 2)
-        src         = f.get("source_type", "dart")
-        ref         = f"{src}:event[{i}]"
+        date_str  = f.get("date", "")
+        recency   = f.get("recency_days", "?")
+        ev_type   = f.get("event_type") or f.get("type", "other")
+        fact_text = f.get("fact", "")
+        impact    = f.get("financial_impact", "low")
+        src       = f.get("source_type", "dart")
+        ref       = f"{src}:event[{i}]"
 
-        impact_note = ""
-        if impact == "high":
-            impact_note = " ★재무영향高"
-        elif impact == "medium":
-            impact_note = " ★재무영향中"
-
+        impact_note = " ★재무영향高" if impact == "high" else (" ★재무영향中" if impact == "medium" else "")
         lines.append(
-            f"  {ref} [{date_str}+{recency}일] [{ev_type}]{impact_note} (중요도{imp}) {fact_text}"
+            f"  {ref} [{date_str}+{recency}일] [{ev_type}]{impact_note} {fact_text}"
         )
 
-    # high-impact 이벤트 강제 반영 지시
     high_impact = [f for f in facts if f.get("financial_impact") == "high"]
     if high_impact:
         titles = " / ".join(f.get("fact", "") for f in high_impact)
         lines.append(
-            f"  ⚠ financial_impact=high 이벤트 {len(high_impact)}개 감지: [{titles}]"
-            f" — 반드시 strengths 또는 risks 중 적합한 곳에 1개 이상 포함. 무시 금지."
+            f"  ⚠ financial_impact=high {len(high_impact)}개: [{titles}]"
+            " — strengths 또는 risks에 반드시 1개 이상 포함."
         )
 
-    # risk 타입 이벤트 별도 강조
-    risk_events = [f for f in facts if f.get("type") == "risk"]
+    risk_events = [f for f in facts if _event_cluster(f) == "risk"]
     if risk_events:
-        lines.append(f"  ⚠ 위 이벤트 중 risk 유형 {len(risk_events)}개 — risks 섹션에 후보로 고려할 것 (Stage C risk와 중복 시 병합)")
+        lines.append(f"  ⚠ risk 유형 {len(risk_events)}개 — risks 섹션 후보 (Stage C risk와 중복 시 병합)")
 
-    lines.append("  ※ Stage D는 최신 이벤트 컨텍스트 제공용. investment_point에 최근 이벤트를 언급할 것.")
-    lines.append("  ※ recent_events 작성 규칙: '공시하였다' '결정하였다' '발표하였다' 등 사실형 문장만 사용."
-                 " '영향을 미칠 것으로' '것으로 보인다' '분석된다' 등 추정·해석 표현 절대 금지.")
+    lines.append("  ※ recent_events: '공시하였다' '결정하였다' '발표하였다' 사실형만. 추정·해석 표현 금지.")
     return "\n".join(lines)
 
 
@@ -416,6 +513,7 @@ def build_thesis_prompt(
 
 [절대 규칙]
 - 제공된 데이터에 없는 사실 절대 포함 금지. 항상 입력의 수치 또는 DART 원문을 직접 근거로 쓸 것.
+- Stage D 이벤트 목록은 코드가 이미 선별한 것. 재선택·제외·재배열 금지. 문장 압축만 허용.
 - ❌ 미래 예측·추정·일반화 표현 절대 금지 (summary 포함 모든 필드):
   "가능성", "전망", "예상", "기대", "~할 것이다", "~로 보인다", "~으로 보인다",
   "성장할", "개선될", "높습니다"(미래 함의 시), "좋아질", "오를",
