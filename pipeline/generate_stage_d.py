@@ -23,10 +23,17 @@ stage_d_raw (공시 목록) → stage_d_sections (구조화된 Fact 3~5개)
       "fact": "자기주식 취득 결정 공시 (재무 이벤트)",
       "financial_impact": "medium",
       "importance": 2,
-      "dart_id": "20260318000123"
+      "dart_id": "20260318000123",
+      "source_type": "dart"
     }
   ]
 }
+
+source_type 우선순위 (SOURCE_PRIORITY):
+  dart: 100  — DART 공시 (가장 신뢰도 높음)
+  ir:    80  — IR 자료
+  news:  60  — 뉴스 기사
+같은 이벤트가 여러 소스에서 들어오면 priority가 높은 소스를 유지.
 """
 
 from __future__ import annotations
@@ -46,6 +53,14 @@ load_dotenv(override=True)
 
 _VALID_TYPES   = {"contract", "operations", "management", "finance", "risk", "other"}
 _VALID_IMPACTS = {"none", "low", "medium", "high"}
+
+# 이벤트 소스 우선순위: 값이 클수록 더 신뢰할 수 있는 소스
+SOURCE_PRIORITY: dict[str, int] = {
+    "dart": 100,
+    "ir":    80,
+    "news":  60,
+}
+_VALID_SOURCE_TYPES = set(SOURCE_PRIORITY.keys())
 
 
 def _build_prompt(company_name: str, disclosures: list[dict]) -> str:
@@ -113,6 +128,7 @@ def _validate_facts(raw_facts: list) -> list[dict]:
         fact_text = str(f.get("fact", "")).strip()
         if not fact_text:
             continue
+        src = f.get("source_type", "dart")
         validated.append({
             "date":            str(f.get("date", "")),
             "recency_days":    int(f.get("recency_days", 0)),
@@ -121,6 +137,7 @@ def _validate_facts(raw_facts: list) -> list[dict]:
             "financial_impact": f.get("financial_impact", "low") if f.get("financial_impact") in _VALID_IMPACTS else "low",
             "importance":      min(3, max(1, int(f.get("importance", 2)))),
             "dart_id":         str(f.get("dart_id", "")),
+            "source_type":     src if src in _VALID_SOURCE_TYPES else "dart",
         })
     return validated[:5]
 

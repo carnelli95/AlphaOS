@@ -368,7 +368,8 @@ def _fmt_stage_d(stage_d: dict) -> str:
         fact_text   = f.get("fact", "")
         impact      = f.get("financial_impact", "low")
         imp         = f.get("importance", 2)
-        ref         = f"dart:event[{i}]"
+        src         = f.get("source_type", "dart")
+        ref         = f"{src}:event[{i}]"
 
         impact_note = ""
         if impact == "high":
