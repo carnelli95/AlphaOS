@@ -18,6 +18,10 @@ build/
 *.log
 *.log.*
 
+# 일회성 배치 코드 파일
+codes.txt
+dart0_news_only.txt
+
 # Celery
 celerybeat-schedule.*
 
