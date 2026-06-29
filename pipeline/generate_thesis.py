@@ -498,8 +498,9 @@ def _fmt_stage_d(stage_d: dict) -> str:
         ref       = f"{src}:event[{i}]"
 
         impact_note = " ★재무영향高" if impact == "high" else (" ★재무영향中" if impact == "medium" else "")
+        src_label = "DART공시" if src == "dart" else "뉴스기사"
         lines.append(
-            f"  {ref} [{date_str}+{recency}일] [{ev_type}]{impact_note} {fact_text}"
+            f"  {ref} [{src_label}][{date_str}+{recency}일] [{ev_type}]{impact_note} {fact_text}"
         )
 
     high_impact = [f for f in facts if f.get("financial_impact") == "high"]
@@ -534,6 +535,11 @@ def build_thesis_prompt(
 [절대 규칙]
 - 제공된 데이터에 없는 사실 절대 포함 금지. 항상 입력의 수치 또는 DART 원문을 직접 근거로 쓸 것.
 - Stage D 이벤트 목록은 코드가 이미 선별한 것. 재선택·제외·재배열 금지. 문장 압축만 허용.
+- Stage D 출처 구분 [반드시 준수 — summary·investment_point·recent_events 모든 필드 적용]:
+  · [뉴스기사] 태그 이벤트 → summary/investment_point/recent_events 어디서든 "뉴스에서", "기사에 따르면", "뉴스에서 확인됐다" 등 뉴스 출처 표현만 허용.
+    ❌ "사업보고서에는", "공시에서", "DART에서", "공시에 따르면" — 이 4가지 표현은 [뉴스기사] 이벤트에 절대 사용 금지.
+  · [DART공시] 태그 이벤트 → "공시하였다", "공시됐다", "보고서에 기재돼 있다" 등 공시 출처만 허용.
+    ❌ "뉴스에서", "기사에서" 금지.
 - ❌ 미래 예측·추정·일반화 표현 절대 금지 (summary 포함 모든 필드):
   "가능성", "전망", "예상", "기대", "~할 것이다", "~로 보인다", "~으로 보인다",
   "성장할", "개선될", "높습니다"(미래 함의 시), "좋아질", "오를",
@@ -548,12 +554,12 @@ def build_thesis_prompt(
 - strengths: [Strengths 후보 — 정량] 섹션에 있는 지표 또는 DART 중요도 3 fact만 사용. 후보에 없는 정량 지표는 strengths에 절대 포함 금지.
 - strengths 금지 항목: 제도 설명(리츠 제도·법규·부동산투자회사법 등)·산업 일반론·시장 환경 설명·"일반 국민" 표현 포함 항목. → 기업 자체의 수익성·경쟁우위·기술·제품·시장 지위만 허용.
 - risks: dart:risk 섹션에 1개 이상 사실이 제공된 경우, risks에 반드시 최소 1개 이상 포함. 입력이 있는데 0개 출력 절대 금지. 입력 자체가 없을 때만 risks = [] 허용.
-- investment_point: "정량에서 X가 확인되고, DART에서 Y가 기재돼 있다" 형식으로 작성
+- investment_point: Stage C(사업보고서) 데이터 있을 때 "정량에서 X가 확인되고, DART에서 Y가 기재돼 있다" 형식. Stage C 없고 Stage D 뉴스만 있을 때 "정량에서 X가 확인되고, 뉴스에서 Y가 확인됐다" 형식. ❌ 뉴스 이벤트를 "DART에서"로 표현 금지.
 
 [summary 작성 규칙 및 예시]
 - 반드시 2~3문장으로 작성. 1문장 슬로건 형식 금지.
 - 문장 1: 정량 Peer 수치 인용 (예: "영업이익률 X%로 업종 중앙값 Y%의 N배가 기록됐다.")
-- 문장 2: DART 사실 인용 (예: "사업보고서에는 Z가 기재돼 있다.")
+- 문장 2: Stage C(사업보고서) 데이터가 있으면 "사업보고서에는 Z가 기재돼 있다." 형식. Stage C 없고 Stage D [뉴스기사] 이벤트만 있으면 "최근 뉴스에서 Z가 확인됐다." 형식. ❌ [뉴스기사] 이벤트를 "사업보고서에는" 또는 "DART에서"로 표현 절대 금지.
 - 문장 3 (선택): 두 근거를 연결하는 관찰 (미래 해석 금지)
 
 ❌ 나쁜 예: "A사는 성장 잠재력이 크고 시장에서 주목받고 있다."
@@ -579,7 +585,7 @@ def build_thesis_prompt(
 
 [출력 형식 - JSON만, 다른 텍스트 절대 금지]
 {{
-  "summary": "2~3문장 요약 (80~150자, 한국어). 정량 Peer 수치 1개 + DART 사실 1개 각각 반드시 포함. 1문장 슬로건 형식 금지.",
+  "summary": "2~3문장 요약 (80~150자, 한국어). 정량 Peer 수치 1개 필수. Stage C(사업보고서) 데이터 있으면 DART 사실 1개 포함. Stage D [뉴스기사] 이벤트만 있으면 뉴스 출처로 표현 (❌ '사업보고서에는' 금지). 1문장 슬로건 형식 금지.",
   "strengths": [
     {{
       "point":      "핵심 강점 한 문장",
