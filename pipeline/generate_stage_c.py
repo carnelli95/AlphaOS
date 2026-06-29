@@ -260,6 +260,8 @@ def extract_stage_c_facts(company_name: str, business_overview: str) -> dict:
             violations = _validate_stage_c_facts(facts)
             if not violations:
                 break
+            if attempt == 0:
+                print(f"  ⚠ Stage C 일반론 감지 → 재시도: {violations[:2]}")
         except Exception:
             return _EMPTY
 
