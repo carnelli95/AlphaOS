@@ -110,7 +110,8 @@ def add_news_to_stage_d(
               SET stage_d_sections = CAST(:data AS JSONB)
         """), {"code": stock_code, "data": json.dumps(updated, ensure_ascii=False)})
 
-    print(f"  ✅ {company_name}({stock_code}): dart={new_dart_cnt} news={new_news_cnt} total={len(merged)}")
+    if verbose:
+        print(f"  ✅ {company_name}({stock_code}): dart={new_dart_cnt} news={new_news_cnt} total={len(merged)}")
     return updated
 
 
