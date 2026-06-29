@@ -112,8 +112,8 @@ def main() -> None:
     ok = err = skipped = 0
     total_dart  = 0
     total_news  = 0
-    news_dist   = Counter()   # news=N개 종목 수 분포
-    elapsed_list: list[float] = []
+    news_dist   = Counter()                      # news=N개 종목 수 분포
+    elapsed_log: list[tuple[float, str, str]] = []  # (elapsed, name, code)
 
     for i, (code, name) in enumerate(targets, 1):
         prefix    = f"[{i:4d}/{total}]"
@@ -134,7 +134,7 @@ def main() -> None:
                 total_news += n_news
                 news_dist[n_news] += 1
                 ok += 1
-                elapsed_list.append(elapsed)
+                elapsed_log.append((elapsed, name, code))
 
                 if n_news > 0:
                     print(f"{prefix} ✅  {name}({code}): dart={n_dart} news={n_news} total={len(facts)}  ({elapsed:.1f}s)")
@@ -150,10 +150,10 @@ def main() -> None:
             time.sleep(args.sleep)
 
     # ── 최종 통계 ────────────────────────────────────────────────────────
-    wall_time    = time.time() - batch_start
-    avg_elapsed  = sum(elapsed_list) / len(elapsed_list) if elapsed_list else 0
-    stocks_with_news = total - news_dist.get(0, 0) - err - skipped
-    avg_news_per_co  = total_news / ok if ok else 0
+    wall_time       = time.time() - batch_start
+    elapsed_values  = [e for e, _, _ in elapsed_log]
+    avg_elapsed     = sum(elapsed_values) / len(elapsed_values) if elapsed_values else 0
+    avg_news_per_co = total_news / ok if ok else 0
 
     print(f"\n{'=' * 44}")
     print(f"=== 완료  {datetime.now().strftime('%H:%M:%S')} ===")
@@ -166,14 +166,18 @@ def main() -> None:
     print()
     print(f"  뉴스 분포:")
     for n in sorted(news_dist.keys()):
-        label  = f"{n}개" if n > 0 else "없음"
-        bar    = "█" * min(news_dist[n] // max(1, ok // 30), 20)
+        label = f"{n}개" if n > 0 else "없음"
+        bar   = "█" * min(news_dist[n] // max(1, ok // 30), 20)
         print(f"    news={label:<3}  {news_dist[n]:>5}종목  {bar}")
     print()
     print(f"  총 실행시간:      {_fmt_duration(wall_time)}")
     print(f"  평균 처리시간:    {avg_elapsed:.2f}s/종목")
-    if elapsed_list:
-        print(f"  최대 처리시간:    {max(elapsed_list):.2f}s  (느린 종목 확인 권장)")
+
+    if elapsed_log:
+        slowest = sorted(elapsed_log, key=lambda x: -x[0])[:5]
+        print(f"\n  느린 종목 TOP{len(slowest)}:")
+        for rank, (t, n, c) in enumerate(slowest, 1):
+            print(f"    {rank}. {n:<12}  {t:.2f}s  ({c})")
 
 
 if __name__ == "__main__":
