@@ -12,6 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import text
 
+import generate_stage_c as _stage_c_mod
 from generate_stage_c import generate_stage_c_for_stock, get_engine
 
 
@@ -135,6 +136,14 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: b
     print(f"성공 {success_count} / 스킵 {skip_count} / 실패 {error_count}")
 
     if success_count > 0:
+        rs = _stage_c_mod._retry_stats
+        retry_rate = rs["retried"] / success_count * 100
+
+        print()
+        print("=== Validator 재시도 통계 ===")
+        print(f"재시도 발생:   {rs['retried']}건 / {success_count}건 ({retry_rate:.1f}%)")
+        print(f"영구 실패:     {rs['permanent_fail']}건  ← 목표 0건")
+
         print()
         print("=== Fact 품질 지표 ===")
         print(f"growth 빈 배열: {quality['growth_empty']}/{success_count} ({quality['growth_empty']/success_count*100:.1f}%)")

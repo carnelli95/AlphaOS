@@ -205,6 +205,9 @@ def _normalize_facts(lst: list, with_moat_type: bool = False) -> list:
     return out
 
 
+# 배치 실행 중 재시도 통계 (batch_generate_stage_c에서 읽음)
+_retry_stats: dict[str, int] = {"retried": 0, "permanent_fail": 0}
+
 _GENERIC_KEYWORDS = (
     "일반적으로", "통상적으로", "업계는", "시장에서는",
     "업종 전체", "업계 전반", "업계 공통",
@@ -262,11 +265,13 @@ def extract_stage_c_facts(company_name: str, business_overview: str) -> dict:
                 break
             if attempt == 0:
                 print(f"  ⚠ Stage C 일반론 감지 → 재시도: {violations[:2]}")
+                _retry_stats["retried"] += 1
         except Exception:
             return _EMPTY
 
     if violations:
         print(f"  ⚠ Stage C 일반론 감지 (2회 후 유지): {violations[:3]}")
+        _retry_stats["permanent_fail"] += 1
     return facts
 
 
