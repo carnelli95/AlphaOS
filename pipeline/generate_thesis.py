@@ -640,9 +640,6 @@ def _safe_parse(raw: dict, has_stage_d_events: bool = False) -> dict:
 
 # ─── 출처 귀인 검증 ──────────────────────────────────────────────────────────────
 
-_NEWS_EXPRESSIONS = ("뉴스에서", "기사에서", "최근 뉴스에서", "기사에 따르면")
-
-
 def _validate_thesis(
     thesis: dict,
     stage_c_dart_count: int,
@@ -652,29 +649,23 @@ def _validate_thesis(
     """
     출처 귀인 오류 검증.
 
-    1) Stage C+D 모두 DART 없음 → "DART에서/사업보고서에는" 표현 감지
-    2) Stage D 뉴스 없음 → "뉴스에서/기사에서" 표현 감지 (역방향 attribution)
+    Stage C+D 모두 DART 없음 → "DART에서/사업보고서에는" 표현 감지.
+    역방향(Stage C → "뉴스에서") 은 프롬프트+코드(_safe_parse)로 제어하고
+    validator에서는 검사하지 않음 (LLM 선호가 강해 retry 효과 없음).
 
     반환: 위반 설명 목록. 빈 리스트 = 통과.
     """
+    if stage_c_dart_count > 0 or stage_d_dart_count > 0:
+        return []  # DART 출처가 하나라도 있으면 검사 불필요
+
     ip      = thesis.get("investment_point") or ""
     summary = thesis.get("summary") or ""
     text    = ip + " " + summary
 
     violations = []
-
-    # 정방향: DART 없는데 "DART에서" 표현
-    if stage_c_dart_count == 0 and stage_d_dart_count == 0:
-        for w in ("DART에서", "사업보고서에는", "공시에서", "공시에 따르면"):
-            if w in text:
-                violations.append(f"'{w}'")
-
-    # 역방향: 뉴스 없는데 "뉴스에서" 표현 (Stage C 사실 → 뉴스 오귀인)
-    if not has_stage_d_news:
-        for w in _NEWS_EXPRESSIONS:
-            if w in text:
-                violations.append(f"'{w}'(뉴스기사 없음)")
-
+    for w in ("DART에서", "사업보고서에는", "공시에서", "공시에 따르면"):
+        if w in text:
+            violations.append(f"'{w}'")
     return violations
 
 
@@ -755,22 +746,12 @@ def generate_thesis_for_stock(
 
     # 2. LLM 텍스트 합성 (attribution validation 실패 시 최대 2회 재시도)
     def _make_retry_hint(viols: list[str]) -> str:
-        has_dart = any(w in v for v in viols
-                       for w in ("DART에서", "사업보고서에는", "공시에서"))
-        has_news = any("뉴스기사 없음" in v for v in viols)
-        lines = ["[재생성 경고] 이전 응답에서 출처 귀인 오류 발생."]
-        if has_dart:
-            lines.append(
-                "이 종목은 DART 데이터가 없습니다."
-                " 'DART에서', '사업보고서에는', '공시에서', '공시에 따르면' 표현 절대 금지."
-            )
-        if has_news:
-            lines.append(
-                "이 종목의 Stage D에 뉴스 이벤트가 없습니다."
-                " summary와 investment_point에서 '뉴스에서', '기사에서', '최근 뉴스에서' 표현 절대 금지."
-                " Stage C 사실은 반드시 '사업보고서에는'으로만 표현하십시오."
-            )
-        return "\n\n" + " ".join(lines)
+        return (
+            "\n\n[재생성 경고] 이전 응답에서 출처 귀인 오류 발생."
+            " 이 종목은 DART 공시·사업보고서 데이터가 없고 Stage D 이벤트가 모두 [뉴스기사] 출처입니다."
+            " investment_point와 summary에서 'DART에서', '사업보고서에는', '공시에서' 표현 절대 금지."
+            " 반드시 '뉴스에서'로만 표현하십시오."
+        )
 
     prompt = build_thesis_prompt(name, alpha_score, stage_b, stage_c, stage_d)
     if verbose:
