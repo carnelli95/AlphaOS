@@ -5,7 +5,7 @@ Stage E 배치 완료 후 실행:
   python pipeline/qa_sample.py
 
 5그룹 stratified sample을 출력한다:
-  대형주 5 / 중형주 5 / 소형주 5 / Stage D 뉴스 0건 5 / Validator 재시도 종목 (최대 5)
+  대형주 5 / 중형주 5 / 소형주 5 / Stage D 뉴스 0건 5 / Validator 대상 종목 5
 """
 
 from __future__ import annotations
@@ -25,16 +25,6 @@ load_dotenv(override=True)
 from generate_ai_report import get_engine
 from sqlalchemy import text
 
-RETRY_FILE = os.path.join(os.path.dirname(__file__), "..", "thesis_retry_stocks.txt")
-
-
-def load_retry_stocks() -> list[str]:
-    path = os.path.abspath(RETRY_FILE)
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
-
 
 def main() -> None:
     engine = get_engine()
@@ -43,58 +33,58 @@ def main() -> None:
         rows = conn.execute(text("""
             SELECT
                 s.code, s.name, s.marcap,
+                (r.thesis_sections->'confidence'->>'dart_count')::int AS c_dart,
+                (SELECT COUNT(*) FROM jsonb_array_elements(
+                    COALESCE(r.stage_d_sections->'facts', '[]'::jsonb)
+                ) f WHERE f->>'source_type' = 'dart') AS d_dart,
                 jsonb_array_length(
                     COALESCE(r.stage_d_sections->'facts', '[]'::jsonb)
-                ) AS d_fact_cnt,
-                jsonb_array_length(
-                    COALESCE(
-                        (SELECT jsonb_agg(f)
-                         FROM jsonb_array_elements(r.stage_d_sections->'facts') f
-                         WHERE f->>'source_type' != 'dart'),
-                        '[]'::jsonb
-                    )
-                ) AS news_cnt
+                ) AS d_total
             FROM stocks s
             JOIN ai_reports r ON r.stock_code = s.code
             WHERE r.thesis_sections IS NOT NULL
               AND s.corp_code IS NOT NULL
         """)).fetchall()
 
-    large, mid, small, no_news = [], [], [], []
-    for code, name, marcap, d_cnt, news_cnt in rows:
+    large, mid, small, no_news, validator_targets = [], [], [], [], []
+
+    for code, name, marcap, c_dart, d_dart, d_total in rows:
         entry = (code, name, marcap or 0)
-        if (news_cnt or 0) == 0:
+        marcap = marcap or 0
+
+        # Stage D 뉴스 0건: dart 포함 전체 fact가 없거나, news fact 없는 경우
+        if (d_total or 0) == 0:
             no_news.append(entry)
-        if (marcap or 0) >= 1_000_000_000_000:
+
+        # Validator 대상: stage_c dart=0 AND stage_d dart=0 (attribution validator가 실제로 동작한 종목)
+        if (c_dart or 0) == 0 and (d_dart or 0) == 0:
+            validator_targets.append(entry)
+
+        if marcap >= 1_000_000_000_000:
             large.append(entry)
-        elif (marcap or 0) >= 50_000_000_000:
+        elif marcap >= 50_000_000_000:
             mid.append(entry)
         else:
             small.append(entry)
 
-    # 재현성을 위해 시드 고정하지 않음 (매번 새 샘플)
-    sample_large   = random.sample(large,   min(5, len(large)))
-    sample_mid     = random.sample(mid,     min(5, len(mid)))
-    sample_small   = random.sample(small,   min(5, len(small)))
-    sample_no_news = random.sample(no_news, min(5, len(no_news)))
-
-    retry_codes = load_retry_stocks()
-    # retry 종목 중 thesis가 있는 것만 필터
-    done_codes = {r[0] for r in rows}
-    retry_valid = [c for c in retry_codes if c in done_codes]
-    sample_retry = random.sample(retry_valid, min(5, len(retry_valid)))
+    sample_large     = random.sample(large,             min(5, len(large)))
+    sample_mid       = random.sample(mid,               min(5, len(mid)))
+    sample_small     = random.sample(small,             min(5, len(small)))
+    sample_no_news   = random.sample(no_news,           min(5, len(no_news)))
+    sample_validator = random.sample(validator_targets, min(5, len(validator_targets)))
 
     groups = [
-        ("대형주 (5)", sample_large),
-        ("중형주 (5)", sample_mid),
-        ("소형주 (5)", sample_small),
-        ("Stage D 뉴스 0건 (5)", sample_no_news),
-        (f"Validator 재시도 종목 ({len(sample_retry)})", [(c, "?", 0) for c in sample_retry]),
+        ("대형주 (5)",                  sample_large),
+        ("중형주 (5)",                  sample_mid),
+        ("소형주 (5)",                  sample_small),
+        ("Stage D 뉴스 0건 (5)",        sample_no_news),
+        (f"Validator 대상 종목 ({len(sample_validator)})", sample_validator),
     ]
 
     print("=" * 60)
     print("QA 샘플  20종목 Stratified")
     print("=" * 60)
+    print(f"(Validator 대상 모집단: {len(validator_targets)}건 중 최대 5건 샘플)")
     total = 0
     for group_name, items in groups:
         print(f"\n[{group_name}]")
@@ -106,7 +96,7 @@ def main() -> None:
     print()
     print(f"총 {total}종목")
     print()
-    print("체크리스트 항목:")
+    print("체크리스트 항목 (종목마다 아래 6개 항목을 체크):")
     for item in [
         "사실관계 정확",
         "DART attribution 정확",
@@ -115,7 +105,7 @@ def main() -> None:
         "투자 논리 자연스러움",
         "핵심 이벤트 누락 없음",
     ]:
-        print(f"  ☐ {item}")
+        print(f"  [ ] {item}")
 
 
 if __name__ == "__main__":

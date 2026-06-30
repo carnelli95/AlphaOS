@@ -150,10 +150,10 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
 
         retry_stocks = _thesis_mod._retry_stocks
         if retry_stocks:
-            out_path = "thesis_retry_stocks.txt"
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(retry_stocks))
-            print(f"재시도 종목 목록 → {out_path} ({len(retry_stocks)}건, QA 샘플용)")
+            import pathlib
+            out_path = pathlib.Path(__file__).parent.parent / "thesis_retry_stocks.txt"
+            out_path.write_text("\n".join(retry_stocks), encoding="utf-8")
+            print(f"재시도 종목 목록 → {out_path.name} ({len(retry_stocks)}건, QA 샘플용)")
 
 
 if __name__ == "__main__":
