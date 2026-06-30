@@ -554,12 +554,12 @@ def build_thesis_prompt(
 - strengths: [Strengths 후보 — 정량] 섹션에 있는 지표 또는 DART 중요도 3 fact만 사용. 후보에 없는 정량 지표는 strengths에 절대 포함 금지.
 - strengths 금지 항목: 제도 설명(리츠 제도·법규·부동산투자회사법 등)·산업 일반론·시장 환경 설명·"일반 국민" 표현 포함 항목. → 기업 자체의 수익성·경쟁우위·기술·제품·시장 지위만 허용.
 - risks: dart:risk 섹션에 1개 이상 사실이 제공된 경우, risks에 반드시 최소 1개 이상 포함. 입력이 있는데 0개 출력 절대 금지. 입력 자체가 없을 때만 risks = [] 허용.
-- investment_point: Stage C(사업보고서) 데이터 있을 때 "정량에서 X가 확인되고, DART에서 Y가 기재돼 있다" 형식. Stage C 없고 Stage D 뉴스만 있을 때 "정량에서 X가 확인되고, 뉴스에서 Y가 확인됐다" 형식. ❌ 뉴스 이벤트를 "DART에서"로 표현 금지.
+- investment_point: Stage C(사업보고서) 데이터 있을 때 → "정량에서 X가 확인되고, DART에서 Y가 기재돼 있다" 형식. ❌ Stage C 내용을 "뉴스에서...", "기사에서..." 로 표현 절대 금지. Stage C 없고 Stage D 뉴스만 있을 때 → "정량에서 X가 확인되고, 뉴스에서 Y가 확인됐다" 형식. ❌ 뉴스 이벤트를 "DART에서"로 표현 금지. Stage D도 없을 때 → 정량 근거만으로 작성.
 
 [summary 작성 규칙 및 예시]
 - 반드시 2~3문장으로 작성. 1문장 슬로건 형식 금지.
 - 문장 1: 정량 Peer 수치 인용 (예: "영업이익률 X%로 업종 중앙값 Y%의 N배가 기록됐다.")
-- 문장 2: Stage C(사업보고서) 데이터가 있으면 "사업보고서에는 Z가 기재돼 있다." 형식. Stage C 없고 Stage D [뉴스기사] 이벤트만 있으면 "최근 뉴스에서 Z가 확인됐다." 형식. ❌ [뉴스기사] 이벤트를 "사업보고서에는" 또는 "DART에서"로 표현 절대 금지.
+- 문장 2: Stage C(사업보고서) 데이터가 있으면 → 반드시 "사업보고서에는 Z가 기재돼 있다." 형식. ❌ Stage C 내용을 "뉴스에서", "최근 뉴스에서", "기사에서" 로 표현 절대 금지. Stage C 없고 Stage D [뉴스기사] 이벤트만 있을 때 → "최근 뉴스에서 Z가 확인됐다." 형식. ❌ [뉴스기사] 이벤트를 "사업보고서에는" 또는 "DART에서"로 표현 절대 금지. Stage C도 없고 Stage D도 없으면 문장 2 생략.
 - 문장 3 (선택): 두 근거를 연결하는 관찰 (미래 해석 금지)
 
 ❌ 나쁜 예: "A사는 성장 잠재력이 크고 시장에서 주목받고 있다."
@@ -600,7 +600,7 @@ def build_thesis_prompt(
       "evidence":   "DART 원문 인용구 또는 수치"
     }}
   ],
-  "recent_events": "Stage D에 데이터가 있는 경우: 최근 주요 이벤트를 1~2문장 사실형으로 요약 ('공시하였다' '결정하였다' 형식). 추정 해석 금지. 없으면 null.",
+  "recent_events": "위 프롬프트에 [최근 주요 이벤트 (Stage D)] 섹션이 있는 경우에만 작성. 해당 섹션이 없으면 반드시 null. Stage C(사업보고서) 내용을 recent_events에 쓰는 것도 금지. 있는 경우: 최근 주요 이벤트를 1~2문장 사실형으로 요약 ('공시하였다' '결정하였다' 형식). 추정 해석 금지.",
   "investment_point": "정량에서 확인된 X와 DART에서 기재된 Y가 일치한다는 형식으로 1~2문장 (한국어, 미래 예측 금지)"
 }}
 
@@ -611,7 +611,7 @@ risks: 위 [리스크 근거] 섹션의 입력 수에 따라 출력.
   - 입력 2개 이상 → 반드시 2개 이상 포함. 1개로 줄이지 말 것. 최대 3개."""
 
 
-def _safe_parse(raw: dict) -> dict:
+def _safe_parse(raw: dict, has_stage_d_events: bool = False) -> dict:
     """LLM 응답 정규화. 예상 밖 형식에 대한 방어 처리."""
     def _items(lst: list | None) -> list:
         out = []
@@ -626,41 +626,55 @@ def _safe_parse(raw: dict) -> dict:
                 out.append({"point": item, "source_ref": "unknown", "evidence": ""})
         return out
 
+    # Stage D 이벤트가 없으면 recent_events는 반드시 null (LLM 할루시네이션 방어)
+    recent = (raw.get("recent_events") or None) if has_stage_d_events else None
+
     return {
         "summary":          raw.get("summary", ""),
         "strengths":        _items(raw.get("strengths")),
         "risks":            _items(raw.get("risks")),
-        "recent_events":    raw.get("recent_events") or None,
+        "recent_events":    recent,
         "investment_point": raw.get("investment_point", ""),
     }
 
 
 # ─── 출처 귀인 검증 ──────────────────────────────────────────────────────────────
 
+_NEWS_EXPRESSIONS = ("뉴스에서", "기사에서", "최근 뉴스에서", "기사에 따르면")
+
+
 def _validate_thesis(
     thesis: dict,
     stage_c_dart_count: int,
     stage_d_dart_count: int,
+    has_stage_d_news: bool = False,
 ) -> list[str]:
     """
     출처 귀인 오류 검증.
 
-    Stage C(사업보고서)와 Stage D 모두 DART 출처가 없는 종목에서
-    'DART에서', '사업보고서에는' 등이 등장하면 위반으로 처리.
+    1) Stage C+D 모두 DART 없음 → "DART에서/사업보고서에는" 표현 감지
+    2) Stage D 뉴스 없음 → "뉴스에서/기사에서" 표현 감지 (역방향 attribution)
 
     반환: 위반 설명 목록. 빈 리스트 = 통과.
     """
-    if stage_c_dart_count > 0 or stage_d_dart_count > 0:
-        return []  # DART 출처가 하나라도 있으면 검사 불필요
-
     ip      = thesis.get("investment_point") or ""
     summary = thesis.get("summary") or ""
     text    = ip + " " + summary
 
     violations = []
-    for w in ("DART에서", "사업보고서에는", "공시에서", "공시에 따르면"):
-        if w in text:
-            violations.append(f"'{w}'")
+
+    # 정방향: DART 없는데 "DART에서" 표현
+    if stage_c_dart_count == 0 and stage_d_dart_count == 0:
+        for w in ("DART에서", "사업보고서에는", "공시에서", "공시에 따르면"):
+            if w in text:
+                violations.append(f"'{w}'")
+
+    # 역방향: 뉴스 없는데 "뉴스에서" 표현 (Stage C 사실 → 뉴스 오귀인)
+    if not has_stage_d_news:
+        for w in _NEWS_EXPRESSIONS:
+            if w in text:
+                violations.append(f"'{w}'(뉴스기사 없음)")
+
     return violations
 
 
@@ -729,20 +743,34 @@ def generate_thesis_for_stock(
     reason_graph = build_reason_graph(alpha_score, stage_b, stage_c)
     confidence   = compute_confidence(reason_graph, stage_b)
 
-    # Validation용 DART 출처 카운트
+    # Validation용 DART/News 출처 카운트
     stage_c_dart_cnt = confidence["dart_count"]
+    d_facts = (stage_d or {}).get("facts", [])
     stage_d_dart_cnt = sum(
-        1 for f in (stage_d or {}).get("facts", [])
-        if f.get("source_type", "dart") == "dart"
+        1 for f in d_facts if f.get("source_type", "dart") == "dart"
     )
+    has_stage_d_news = any(f.get("source_type") == "news" for f in d_facts)
+    # Stage D 이벤트가 선별돼 프롬프트에 포함되는지 여부 (recent_events 허용 판정용)
+    has_events = bool(_fmt_stage_d(stage_d or {}))
 
     # 2. LLM 텍스트 합성 (attribution validation 실패 시 최대 2회 재시도)
-    _RETRY_HINT = (
-        "\n\n[재생성 경고] 이전 응답에서 출처 귀인 오류 발생."
-        " 이 종목은 DART 공시·사업보고서 데이터가 없고 Stage D 이벤트가 모두 [뉴스기사] 출처입니다."
-        " investment_point와 summary에서 'DART에서', '사업보고서에는', '공시에서' 표현 절대 금지."
-        " 반드시 '뉴스에서'로만 표현하십시오."
-    )
+    def _make_retry_hint(viols: list[str]) -> str:
+        has_dart = any(w in v for v in viols
+                       for w in ("DART에서", "사업보고서에는", "공시에서"))
+        has_news = any("뉴스기사 없음" in v for v in viols)
+        lines = ["[재생성 경고] 이전 응답에서 출처 귀인 오류 발생."]
+        if has_dart:
+            lines.append(
+                "이 종목은 DART 데이터가 없습니다."
+                " 'DART에서', '사업보고서에는', '공시에서', '공시에 따르면' 표현 절대 금지."
+            )
+        if has_news:
+            lines.append(
+                "이 종목의 Stage D에 뉴스 이벤트가 없습니다."
+                " summary와 investment_point에서 '뉴스에서', '기사에서', '최근 뉴스에서' 표현 절대 금지."
+                " Stage C 사실은 반드시 '사업보고서에는'으로만 표현하십시오."
+            )
+        return "\n\n" + " ".join(lines)
 
     prompt = build_thesis_prompt(name, alpha_score, stage_b, stage_c, stage_d)
     if verbose:
@@ -754,10 +782,10 @@ def generate_thesis_for_stock(
     violations: list[str] = []
     thesis: dict = {}
     for attempt in range(3):  # 최초 1회 + 재시도 최대 2회
-        call_prompt = prompt if attempt == 0 else prompt + _RETRY_HINT
+        call_prompt = prompt if attempt == 0 else prompt + _make_retry_hint(violations)
         raw    = call_llm(call_prompt)
-        thesis = _safe_parse(raw)
-        violations = _validate_thesis(thesis, stage_c_dart_cnt, stage_d_dart_cnt)
+        thesis = _safe_parse(raw, has_stage_d_events=has_events)
+        violations = _validate_thesis(thesis, stage_c_dart_cnt, stage_d_dart_cnt, has_stage_d_news)
         if not violations:
             break
         if attempt == 0:
