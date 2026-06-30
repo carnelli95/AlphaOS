@@ -38,7 +38,7 @@ CHECKLIST = [
 OUT_CSV = os.path.join(os.path.dirname(__file__), "..", "qa_results.csv")
 
 
-def main() -> None:
+def main(n: int = 5) -> None:
     engine = get_engine()
 
     with engine.connect() as conn:
@@ -77,23 +77,23 @@ def main() -> None:
         else:
             small.append(entry)
 
-    sample_large     = random.sample(large,             min(5, len(large)))
+    sample_large     = random.sample(large,             min(n, len(large)))
     used = {e[0] for e in sample_large}
 
     mid_pool = [e for e in mid if e[0] not in used]
-    sample_mid = random.sample(mid_pool, min(5, len(mid_pool)))
+    sample_mid = random.sample(mid_pool, min(n, len(mid_pool)))
     used |= {e[0] for e in sample_mid}
 
     small_pool = [e for e in small if e[0] not in used]
-    sample_small = random.sample(small_pool, min(5, len(small_pool)))
+    sample_small = random.sample(small_pool, min(n, len(small_pool)))
     used |= {e[0] for e in sample_small}
 
     no_news_pool = [e for e in no_news if e[0] not in used]
-    sample_no_news = random.sample(no_news_pool, min(5, len(no_news_pool)))
+    sample_no_news = random.sample(no_news_pool, min(n, len(no_news_pool)))
     used |= {e[0] for e in sample_no_news}
 
     val_pool = [e for e in validator_targets if e[0] not in used]
-    sample_validator = random.sample(val_pool, min(5, len(val_pool)))
+    sample_validator = random.sample(val_pool, min(n, len(val_pool)))
 
     groups = [
         ("대형주",          sample_large),
@@ -146,4 +146,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=5, help="그룹당 종목 수 (기본 5, 총 5×그룹수)")
+    args = parser.parse_args()
+    main(n=args.count)
