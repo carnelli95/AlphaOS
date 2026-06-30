@@ -78,10 +78,22 @@ def main() -> None:
             small.append(entry)
 
     sample_large     = random.sample(large,             min(5, len(large)))
-    sample_mid       = random.sample(mid,               min(5, len(mid)))
-    sample_small     = random.sample(small,             min(5, len(small)))
-    sample_no_news   = random.sample(no_news,           min(5, len(no_news)))
-    sample_validator = random.sample(validator_targets, min(5, len(validator_targets)))
+    used = {e[0] for e in sample_large}
+
+    mid_pool = [e for e in mid if e[0] not in used]
+    sample_mid = random.sample(mid_pool, min(5, len(mid_pool)))
+    used |= {e[0] for e in sample_mid}
+
+    small_pool = [e for e in small if e[0] not in used]
+    sample_small = random.sample(small_pool, min(5, len(small_pool)))
+    used |= {e[0] for e in sample_small}
+
+    no_news_pool = [e for e in no_news if e[0] not in used]
+    sample_no_news = random.sample(no_news_pool, min(5, len(no_news_pool)))
+    used |= {e[0] for e in sample_no_news}
+
+    val_pool = [e for e in validator_targets if e[0] not in used]
+    sample_validator = random.sample(val_pool, min(5, len(val_pool)))
 
     groups = [
         ("대형주",          sample_large),
