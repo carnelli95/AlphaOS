@@ -22,6 +22,7 @@ build/
 codes.txt
 dart0_news_only.txt
 thesis_retry_stocks.txt
+qa_results.csv
 
 # Celery
 celerybeat-schedule.*
