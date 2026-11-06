@@ -1,6 +1,7 @@
 """FinanceDataReader Sector 커버리지 확인 — Stage B v1 설계용."""
 import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, r"C:\Users\carne\Desktop\AIProjects\AlphaOS\pipeline")
 
 import FinanceDataReader as fdr

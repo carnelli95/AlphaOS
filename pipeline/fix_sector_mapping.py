@@ -4,7 +4,8 @@
 해결: 2자리 prefix 기반으로만 매핑 + 주요 코드 수정.
 """
 import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, r"C:\Users\carne\Desktop\AIProjects\AlphaOS\pipeline")
 
 from generate_ai_report import get_engine

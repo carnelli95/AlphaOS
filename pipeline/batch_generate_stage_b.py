@@ -15,7 +15,8 @@ from datetime import datetime
 
 from sqlalchemy import text
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from generate_stage_b import generate_stage_b_for_stock, save_stage_b, get_engine
 

@@ -30,7 +30,8 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from sqlalchemy import text
 

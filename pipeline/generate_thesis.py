@@ -795,7 +795,8 @@ def generate_thesis_for_stock(
 
 if __name__ == "__main__":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     target = sys.argv[1] if len(sys.argv) > 1 else "005930"
 

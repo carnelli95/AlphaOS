@@ -52,7 +52,8 @@ from datetime import datetime
 
 from sqlalchemy import text
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from generate_ai_report import get_engine
 

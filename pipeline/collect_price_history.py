@@ -32,7 +32,8 @@ import pandas as pd
 from pykrx import stock
 from sqlalchemy import text
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from batch_collect_runner import get_engine

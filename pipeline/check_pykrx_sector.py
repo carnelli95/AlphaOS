@@ -1,6 +1,7 @@
 """pykrx 업종 데이터 검증 — Stage B v1 진행 전 확인."""
 import sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, r"C:\Users\carne\Desktop\AIProjects\AlphaOS\pipeline")
 
 from pykrx import stock

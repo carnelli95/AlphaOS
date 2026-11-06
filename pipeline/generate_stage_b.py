@@ -294,7 +294,8 @@ def save_stage_b(engine, stock_code: str, data: dict) -> None:
 
 if __name__ == "__main__":
     import sys, io, json
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     code = sys.argv[1] if len(sys.argv) > 1 else "005930"
     engine = get_engine()
