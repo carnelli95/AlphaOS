@@ -1,9 +1,14 @@
+import os
+
 from celery import Celery
+
+# Windows에서 WSL localhost 포워딩이 안 될 때 WSL IP로 덮어쓸 수 있게 환경변수 우선
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 celery_app = Celery(
     "quant_screener",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/0",
+    broker=REDIS_URL,
+    backend=REDIS_URL,
     include=["app.tasks"],
 )
 
