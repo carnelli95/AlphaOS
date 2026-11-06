@@ -172,11 +172,16 @@ qa_reports/
 |---|---|---|
 | stage_c | `new_stock` | `stage_c_sections IS NULL` |
 | stage_c | `upgrade_format` | `--upgrade` (구 포맷 재처리) |
-| stage_d_dart | `new_stock` | `stage_d_raw`/`stage_d_sections` 없음 |
-| stage_d_news | `missing_news` | news facts 없음 |
+| stage_d_dart | `new_disclosure` | 신규 종목(`stage_d_sections` 없음) ∪ 워터마크 이후 시장 전체 공시 스캔에서 새 공시가 생긴 종목 ∪ `stage_d_raw.pending_generate` |
+| stage_d_dart | `rebuild_window` | `--rebuild-window` (최근 180일 전체 재스캔, 수동 실행) |
+| stage_d_news | `rescan_due` | `news_scanned_at` 없음 또는 7일 경과, 오래된 순 150개/일 |
 | stage_e | `incremental_scan` | `new_stock`(thesis 없음) ∪ `stage_d_updated`(아래) 스캔 결과 |
 
 **Stage E 재생성 트리거 — 타임스탬프 비교 (신규 구현, 2026-07-02):** 기존에는 `thesis_sections IS NULL`인 종목(한 번도 생성 안 됨)만 incremental 대상이었음 — 이미 Thesis가 있는데 그 이후 Stage D에 새 뉴스/공시가 추가된 경우를 놓치는 구멍이 있었다. `pipeline/batch_generate_thesis.py`의 `get_stage_d_updated_codes()`가 `stage_d_sections->>'generated_at' > thesis_sections->>'generated_at'`인 종목을 추가로 찾아 기본 incremental 대상에 포함시킨다. 이를 위해 `pipeline/generate_stage_d_news.py`의 `add_news_to_stage_d()`가 facts가 실제로 바뀔 때 `stage_d_sections.generated_at`을 갱신하도록 수정함 (기존에는 뉴스 병합 후에도 원래 DART 생성 시각이 그대로 남아있던 버그).
+
+**Stage D 증분 갱신 (2026-11-06):** 07-04~07-15 운영 QA Report에서 공시 수집이 12일 연속 0건으로 확인됨. 원인은 (1) Stage D DART/뉴스가 "비어 있는 종목만 채우는" 구조라 최초 생성 후 갱신이 없었고, (2) 공시 유형 필터가 `A`(실제로는 정기공시)·`B`·`F`라 거래소 수시공시(`I`: 공급계약·잠정실적·배당·소각)가 아예 수집되지 않았던 것. 수정:
+- DART: `pipeline_state.stage_d_dart_scanned_through` 워터마크 ~ 오늘의 시장 전체 공시를 corp_code 없이 조회 → 유니버스 종목별 `stage_d_raw`에 rcept_no 기준 병합 → 새 공시가 생긴 종목만 Fact 재생성. raw 저장 후 생성 전 실패는 `pending_generate` 플래그로 다음 실행에서 재시도. 워터마크가 없으면 Stage 오류로 멈추고 `--rebuild-window` 수동 실행을 요구.
+- 뉴스: `news_scanned_at` 기반 주기 재검색. 기존 news facts와 합집합(URL 기준) 후 상위 5개 유지 — 재검색이 과거 주요 기사를 덮어쓰지 않도록. 내용이 같으면 `generated_at`을 건드리지 않아 Thesis 불필요 재생성 방지.
 
 **알려진 한계**: Stage C는 아직 `generated_at`을 기록하지 않아 이 비교에서 제외됨 — 사업보고서 기반이라 갱신 빈도가 낮아 v1에서는 범위 밖으로 뒀다. 필요해지면 Stage C 결과에도 `generated_at`을 추가하고 트리거 목록에 편입.
 

@@ -276,8 +276,9 @@ def fetch_news_events(
         resp.raise_for_status()
         raw_items = resp.json().get("items", [])
     except Exception as exc:
-        print(f"[collect_news] 네이버 API 오류: {exc}")
-        return []
+        # 빈 리스트로 삼키면 호출 측이 "뉴스 없음"으로 보고 news_scanned_at을 기록해
+        # 실제로는 검색 안 된 종목이 재검색 주기 동안 빠진다 → 실패로 올림
+        raise RuntimeError(f"네이버 API 오류: {exc}") from exc
 
     # ── 기간 필터 + 파싱 ──────────────────────────────────────────────
     parsed: list[dict] = []

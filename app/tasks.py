@@ -76,7 +76,8 @@ def run_daily_pipeline(self):
 
     _run("stage_c", "batch_generate_stage_c", sleep_seconds=0.5, limit=None)
     _run("stage_d_dart", "batch_generate_stage_d")
-    _run("stage_d_news", "batch_generate_stage_d_news")
+    # 재검색 주기(7일) 도래 종목 중 오래된 순 150개 — 전 종목이 약 1주 주기로 순환
+    _run("stage_d_news", "batch_generate_stage_d_news", limit=150)
     _run("stage_e", "batch_generate_thesis", sleep_seconds=0.5, limit=None)
 
     report = generate_qa_report.generate()

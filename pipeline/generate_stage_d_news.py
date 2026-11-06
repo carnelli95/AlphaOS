@@ -24,11 +24,57 @@ from sqlalchemy import text
 load_dotenv(override=True)
 sys.path.insert(0, os.path.dirname(__file__))
 
+from collections import Counter
+from datetime import date
+
 from generate_ai_report import get_engine
-from collect_news import fetch_news_events, merge_with_dart_facts
+from collect_news import DEFAULT_WINDOW_DAYS, fetch_news_events, merge_with_dart_facts
 
 NAVER_CLIENT_ID     = os.environ.get("NAVER_CLIENT_ID", "")
 NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "")
+
+MAX_NEWS_FACTS       = 5
+MAX_PER_EVENT_TYPE   = 2
+
+
+def _news_key(f: dict) -> str:
+    return f.get("news_url") or f"{f.get('date', '')}|{f.get('fact', '')}"
+
+
+def _recency(date_str: str, today: date) -> int:
+    try:
+        return (today - date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))).days
+    except (ValueError, TypeError):
+        return 9999
+
+
+def combine_news(old_news: list[dict], new_news: list[dict], today: date | None = None,
+                 window_days: int = DEFAULT_WINDOW_DAYS) -> list[dict]:
+    """
+    기존 news facts + 새로 수집한 news facts 합집합.
+
+    재검색은 최신 기사 N건만 가져오므로 덮어쓰면 기간 내 과거 주요 기사가 사라진다.
+    URL 기준 중복 제거(새 수집본 우선) → recency 재계산 → 기간 밖 제거 →
+    weighted_score 순 + event_type당 최대 2개 → 최대 5개.
+    """
+    today = today or date.today()
+    by_key: dict[str, dict] = {}
+    for f in list(old_news) + list(new_news):
+        by_key[_news_key(f)] = f
+    pool = []
+    for f in by_key.values():
+        rec = _recency(f.get("date", ""), today)
+        if rec <= window_days:
+            pool.append(dict(f, recency_days=rec))
+    pool.sort(key=lambda f: (-f.get("weighted_score", 0), f.get("recency_days", 9999)))
+    seen: Counter = Counter()
+    out: list[dict] = []
+    for f in pool:
+        et = f.get("event_type", "other")
+        if seen[et] < MAX_PER_EVENT_TYPE:
+            out.append(f)
+            seen[et] += 1
+    return out[:MAX_NEWS_FACTS]
 
 
 def add_news_to_stage_d(
@@ -81,28 +127,37 @@ def add_news_to_stage_d(
         for f in news_facts:
             print(f"    [{f['date']}] [{f['type']}] {f['fact'][:60]}")
 
-    if not news_facts:
-        if verbose:
-            print(f"  → 뉴스 없음, 변경 없음")
-        return sections
+    scanned_at = datetime.now().isoformat()
+    old_facts  = sections.get("facts", [])
+    old_news   = [f for f in old_facts if f.get("source_type") == "news"]
 
-    # 우선순위 병합 (dart > news)
-    merged = merge_with_dart_facts(dart_facts, news_facts)
+    # 기존 뉴스와 합집합 후 우선순위 병합 (dart > news)
+    merged = merge_with_dart_facts(dart_facts, combine_news(old_news, news_facts))
 
     new_dart_cnt = sum(1 for f in merged if f.get("source_type") == "dart")
     new_news_cnt = sum(1 for f in merged if f.get("source_type") == "news")
 
-    # 기존과 동일하면 건너뜀
-    old_news_cnt = sum(1 for f in sections.get("facts", []) if f.get("source_type") == "news")
-    if new_news_cnt == old_news_cnt and len(merged) == len(sections.get("facts", [])):
+    # 내용 기준 비교 — 바뀐 게 없으면 스캔 시각만 기록 (generated_at을 건드리면 Thesis가 재생성됨)
+    def _ids(facts: list[dict]) -> list[str]:
+        return [f.get("dart_id") or _news_key(f) for f in facts]
+
+    if _ids(merged) == _ids(old_facts):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE ai_reports
+                SET stage_d_sections = jsonb_set(stage_d_sections, '{news_scanned_at}',
+                                                 to_jsonb(CAST(:ts AS TEXT)))
+                WHERE stock_code = :code AND stage_d_sections IS NOT NULL
+            """), {"code": stock_code, "ts": scanned_at})
         if verbose:
             print(f"  → 변경 없음 (news={new_news_cnt})")
-        return sections
+        return dict(sections, news_scanned_at=scanned_at)
 
     updated = dict(sections)
-    updated["facts"]        = merged
-    updated["fact_count"]   = len(merged)
-    updated["generated_at"] = datetime.now().isoformat()
+    updated["facts"]           = merged
+    updated["fact_count"]      = len(merged)
+    updated["generated_at"]    = scanned_at
+    updated["news_scanned_at"] = scanned_at
 
     with engine.begin() as conn:
         conn.execute(text("""

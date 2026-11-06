@@ -3,9 +3,15 @@ Stage D 배치 실행기: 수집(collect) → Fact 추출(generate) 순차 실�
 
 --collect-only  : 수집만 (DART API 호출, DB 저장)
 --generate-only : Fact 추출만 (stage_d_raw 있는 종목 대상)
---force         : 이미 stage_d_sections가 있는 종목도 재생성
+--force         : 이미 stage_d_sections가 있는 종목도 재생성 (종목별 API 수집)
+--rebuild-window: 시장 전체 공시를 최근 period-days 전체 구간으로 다시 스캔해
+                  모든 종목의 stage_d_raw를 갱신하고, 공시 목록이 바뀐 종목만 재생성.
+                  워터마크 초기화 / 공시 유형 변경 후 1회 실행용 (LLM 호출 많음)
 
-기본 (옵션 없음): 수집 → 생성 순서로 실행, 미완료 종목만 처리
+기본 (옵션 없음):
+  1. 신규 종목(stage_d_sections 없음) → 종목별 수집 + 생성
+  2. 증분: 워터마크(pipeline_state)~오늘 시장 전체 공시 조회 → 유니버스 종목별 병합
+     → 새 공시가 생긴 종목만 재생성. 워터마크가 없으면 --rebuild-window를 먼저 요구.
 """
 from __future__ import annotations
 
@@ -13,14 +19,20 @@ import argparse
 import sys
 import io
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import text
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
+from generate_ai_report import LLMQuotaExhausted
 from generate_ai_report import get_engine
-from collect_stage_d import collect_stage_d_for_stock, ensure_stage_d_column
+from collect_stage_d import (
+    collect_stage_d_for_stock, ensure_stage_d_column, fetch_market_disclosures,
+    get_state, merge_disclosures, save_stage_d_raw, set_state,
+)
 from generate_stage_d import generate_stage_d_for_stock
+
+WATERMARK_KEY = "stage_d_dart_scanned_through"
 from stage_result import now_kst, write_stage_result
 
 if hasattr(sys.stdout, "buffer"):
@@ -67,28 +79,106 @@ def _load_targets(engine, collect_only: bool, generate_only: bool, force: bool) 
     return [(r[0], r[1], r[2]) for r in rows]
 
 
+def _scan_market(engine, period_days: int, rebuild: bool, exclude: set[str]) -> tuple[int, int]:
+    """
+    시장 전체 공시를 조회해 기존 stage_d_raw에 병합하고, 새 공시가 생긴 종목에
+    pending_generate 플래그를 세운다. (신규 공시 건수, 플래그 세운 종목 수) 반환.
+
+    rebuild=True: 최근 period_days 전체를 다시 스캔하고, 공시 목록이 조금이라도
+    달라진 종목(유형 추가·정기보고서 제거·기간 만료 포함)을 모두 재생성 대상으로.
+    """
+    today = date.today()
+    watermark = get_state(engine, WATERMARK_KEY)
+    if rebuild:
+        bgn = today - timedelta(days=period_days)
+    elif watermark:
+        bgn = date.fromisoformat(watermark)  # 마지막 스캔일 당일 재포함 (중복은 rcept_no로 제거)
+    else:
+        raise RuntimeError(
+            "Stage D 워터마크 없음 — 최초 1회 `python pipeline/batch_generate_stage_d.py "
+            "--rebuild-window` 실행 필요 (LLM 대량 호출이라 자동 실행하지 않음)"
+        )
+
+    print(f"  시장 전체 공시 스캔: {bgn} ~ {today}  ({'rebuild' if rebuild else 'incremental'})")
+    by_corp = fetch_market_disclosures(bgn, today, today)
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT r.stock_code, s.corp_code, r.stage_d_raw
+            FROM ai_reports r JOIN stocks s ON s.code = r.stock_code
+            WHERE s.corp_code IS NOT NULL AND r.stage_d_sections IS NOT NULL
+        """)).fetchall()
+
+    new_total = flagged = 0
+    for code, corp_code, raw in rows:
+        if code in exclude:
+            continue
+        existing = (raw or {}).get("disclosures", [])
+        incoming = by_corp.get(corp_code, [])
+        if not incoming and not rebuild:
+            continue
+        merged = merge_disclosures(existing, incoming, period_days, today)
+        old_ids = {d["rcept_no"] for d in existing}
+        new_ids = {d["rcept_no"] for d in merged} - old_ids
+        changed = bool(new_ids) or (rebuild and {d["rcept_no"] for d in merged} != old_ids)
+        if not changed:
+            continue
+        new_total += len(new_ids)
+        flagged += 1
+        save_stage_d_raw(engine, code, merged, period_days, pending_generate=True)
+
+    # raw 저장까지 끝난 뒤 전진 — 생성 실패분은 pending 플래그로 다음 실행에서 재시도
+    set_state(engine, WATERMARK_KEY, today.isoformat())
+    print(f"  신규 공시 {new_total}건 / 재생성 대상 {flagged}종목  (워터마크 → {today})")
+    return new_total, flagged
+
+
+def _load_pending(engine) -> list[tuple]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT r.stock_code, s.corp_code, s.name
+            FROM ai_reports r JOIN stocks s ON s.code = r.stock_code
+            WHERE (r.stage_d_raw->>'pending_generate')::boolean IS TRUE
+            ORDER BY r.stock_code
+        """)).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
 def run(collect_only: bool = False, generate_only: bool = False,
-        force: bool = False, period_days: int = 180) -> dict:
+        force: bool = False, period_days: int = 180, rebuild_window: bool = False) -> dict:
     engine = get_engine()
     ensure_stage_d_column(engine)
 
     targets = _load_targets(engine, collect_only, generate_only, force)
-    total   = len(targets)
+    collect_codes = {t[0] for t in targets}  # 종목별 API 수집 대상
 
     mode = "collect+generate"
     if collect_only:  mode = "collect only"
     if generate_only: mode = "generate only"
     if force:         mode += " (force)"
+    if rebuild_window: mode += " (rebuild-window)"
 
-    trigger  = "manual_force" if force else "new_stock"
-    run_mode = "full_rebuild" if force else "incremental"
+    if force:
+        trigger, run_mode = "manual_force", "full_rebuild"
+    elif rebuild_window:
+        trigger, run_mode = "rebuild_window", "full_rebuild"
+    else:
+        trigger, run_mode = "new_disclosure", "incremental"
 
     started_at = now_kst()
+    disclosures_collected = 0
+    market_flagged = 0
+    incremental = not (collect_only or generate_only or force)
+    if incremental:
+        disclosures_collected, market_flagged = _scan_market(
+            engine, period_days, rebuild_window, exclude=collect_codes)
+        targets = targets + [t for t in _load_pending(engine) if t[0] not in collect_codes]
+
+    total = len(targets)
     print(f"[{started_at.strftime('%H:%M:%S')}] Stage D 배치 시작: {total}개  ({mode})")
 
     ok = skip = fail = 0
     no_events = 0
-    disclosures_collected = 0
 
     # 집계용
     from collections import Counter
@@ -99,8 +189,8 @@ def run(collect_only: bool = False, generate_only: bool = False,
         prefix = f"[{i}/{total}] {code} {name}"
 
         try:
-            # Step 1: 수집
-            if not generate_only:
+            # Step 1: 수집 (신규 종목만 — 증분 대상은 _scan_market에서 raw 갱신 완료)
+            if code in collect_codes and not generate_only:
                 result_raw = collect_stage_d_for_stock(
                     engine, code, corp_code,
                     period_days=period_days,
@@ -131,6 +221,9 @@ def run(collect_only: bool = False, generate_only: bool = False,
             ok += 1
             time.sleep(0.3)  # DART API rate limit 여유
 
+        except LLMQuotaExhausted:
+            print("LLM API 크레딧 소진 — 배치 중단 (남은 종목은 다음 실행에서 처리)")
+            raise
         except Exception as e:
             fail += 1
             print(f"{prefix} 실패: {e}")
@@ -204,6 +297,7 @@ def run(collect_only: bool = False, generate_only: bool = False,
         "impact_dist": dict(impact_counter),
         "total_facts": total_facts,
         "disclosures_collected": disclosures_collected,
+        "market_flagged": market_flagged,
     }
     write_stage_result("stage_d_dart", result)
     return result
@@ -215,8 +309,11 @@ def main() -> dict:
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--force",         action="store_true")
     parser.add_argument("--period-days",   type=int, default=180)
+    parser.add_argument("--rebuild-window", action="store_true",
+                        help="최근 period-days 전체 시장 공시 재스캔 (워터마크 초기화용, LLM 호출 많음)")
     args = parser.parse_args()
-    return run(args.collect_only, args.generate_only, args.force, args.period_days)
+    return run(args.collect_only, args.generate_only, args.force, args.period_days,
+               args.rebuild_window)
 
 
 if __name__ == "__main__":

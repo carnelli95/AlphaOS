@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -62,13 +63,48 @@ SOURCE_PRIORITY: dict[str, int] = {
 }
 _VALID_SOURCE_TYPES = set(SOURCE_PRIORITY.keys())
 
+# 거래소공시(I) 포함 후 활발한 종목은 180일 공시가 수십 건 — 프롬프트에는 최신 N건만
+MAX_PROMPT_DISCLOSURES = 60
+
+# 제목만으로는 투자 의미를 알 수 없는 루틴 공시 — LLM에 넘기기 전에 제거 (토큰 비용 없음)
+_ROUTINE_REPORT_PATTERNS = (
+    "최대주주등소유주식변동신고서",
+    "기업설명회",
+    "주주명부폐쇄",
+    "기타경영사항(자율공시)",
+    "결산실적공시예고",
+)
+
+
+_TAG_PREFIX = re.compile(r"^(\[[^\]]*\]\s*)+")
+
+
+def _drop_routine(disclosures: list[dict]) -> list[dict]:
+    """
+    LLM 입력 전 결정적 정리:
+      1. 루틴 공시 제거
+      2. 같은 날 같은 제목(정정 태그 제외)은 1건만 — 원공시+[기재정정] 쌍이 fact 2개로 갈리는 것 방지
+    """
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for d in disclosures:  # 최신순 입력 — 먼저 나온 것(정정본 포함) 유지
+        title = d.get("report_nm", "").replace(" ", "")
+        if any(p in title for p in _ROUTINE_REPORT_PATTERNS):
+            continue
+        key = (d.get("rcept_dt", ""), _TAG_PREFIX.sub("", title))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
 
 def _build_prompt(company_name: str, disclosures: list[dict]) -> str:
     if not disclosures:
         return ""
 
     lines = []
-    for d in disclosures:
+    for d in disclosures[:MAX_PROMPT_DISCLOSURES]:
         lines.append(
             f"  [{d['rcept_dt']}] recency={d['recency_days']}일  {d['report_nm']}"
             f"  (rcept_no={d['rcept_no']})"
@@ -94,6 +130,8 @@ def _build_prompt(company_name: str, disclosures: list[dict]) -> str:
     low    = 영향이 미미하거나 불분명
     none   = 재무적 영향 없음 (인사 변경·자율공시 등)
 - importance: 1(낮음) / 2(보통) / 3(높음) — 투자 판단에의 중요도
+- 실적 공시(영업(잠정)실적, 매출액또는손익구조변동)는 type=finance, financial_impact=high,
+  importance=3. 같은 분기 실적의 정정 공시는 원 공시와 1개 fact로 병합.
 - fact 문장에 회사명 포함 금지. "X를 공시했다" 형식 대신 이벤트 내용 중심으로 작성.
   예) ❌ "삼성전자는 자기주식취득결정을 공시했다."
       ✅ "자기주식 취득 및 처분 결정 (총 3회 반복 공시)"
@@ -164,7 +202,7 @@ def generate_stage_d_for_stock(
         return None
 
     name, raw = row
-    disclosures = raw.get("disclosures", [])
+    disclosures = _drop_routine(raw.get("disclosures", []))
 
     if not disclosures:
         # 공시 없음도 정상 케이스 — 빈 sections로 저장
@@ -209,24 +247,30 @@ def _save_stage_d(engine, stock_code: str, data: dict) -> None:
         ).fetchone()
 
     preserved: list[dict] = []
+    news_scanned_at = None
     if row and row[0]:
         preserved = [
             f for f in (row[0].get("facts") or [])
             if f.get("source_type", "dart") != "dart"
         ]
+        news_scanned_at = row[0].get("news_scanned_at")
 
     dart_facts: list[dict] = data.get("facts", [])
     slots_left = max(0, 5 - len(dart_facts))
     all_facts  = dart_facts + preserved[:slots_left]
 
     data = dict(data, facts=all_facts, fact_count=len(all_facts))
+    if news_scanned_at:
+        # 뉴스 재검색 주기 판단용 — DART 재생성 때문에 뉴스 스캔 이력이 리셋되면 안 됨
+        data["news_scanned_at"] = news_scanned_at
 
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO ai_reports (stock_code, stage_d_sections)
             VALUES (:code, CAST(:data AS JSONB))
             ON CONFLICT (stock_code) DO UPDATE
-              SET stage_d_sections = CAST(:data AS JSONB)
+              SET stage_d_sections = CAST(:data AS JSONB),
+                  stage_d_raw      = ai_reports.stage_d_raw - 'pending_generate'
         """), {"code": stock_code, "data": json.dumps(data, ensure_ascii=False)})
 
 
