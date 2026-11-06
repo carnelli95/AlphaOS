@@ -30,10 +30,12 @@ from datetime import datetime
 from sqlalchemy import text
 
 sys.path.insert(0, os.path.dirname(__file__))
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from generate_ai_report import get_engine
 from generate_stage_d_news import add_news_to_stage_d
+from stage_result import now_kst, write_stage_result
 
 try:
     from dotenv import load_dotenv
@@ -88,24 +90,21 @@ def _fmt_duration(seconds: float) -> str:
     return f"{m}m {s:02d}s"
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force",  action="store_true", help="기존 news facts도 재생성")
-    parser.add_argument("--limit",  type=int, default=None, help="처리 종목 수 제한")
-    parser.add_argument("--sleep",  type=float, default=1.5, help="종목 간 sleep 초")
-    args = parser.parse_args()
-
+def run(force: bool = False, limit: int | None = None, sleep: float = 1.5) -> dict:
     if not NAVER_CLIENT_ID:
-        print("❌ NAVER_CLIENT_ID 없음. .env 확인.")
-        sys.exit(1)
+        raise RuntimeError("NAVER_CLIENT_ID 없음. .env 확인.")
 
     engine  = get_engine()
-    targets = _load_targets(engine, force=args.force, limit=args.limit)
+    targets = _load_targets(engine, force=force, limit=limit)
     total   = len(targets)
 
+    trigger  = "manual_force" if force else "missing_news"
+    run_mode = "full_rebuild" if force else "incremental"
+
+    started_at = now_kst()
     print(f"=== Stage D 뉴스 배치 ===")
-    print(f"대상: {total}개 | force={args.force} | sleep={args.sleep}s")
-    print(f"시작: {datetime.now().strftime('%H:%M:%S')}\n")
+    print(f"대상: {total}개 | force={force} | sleep={sleep}s")
+    print(f"시작: {started_at.strftime('%H:%M:%S')}\n")
 
     batch_start = time.time()
 
@@ -147,16 +146,17 @@ def main() -> None:
             err += 1
 
         if i < total:
-            time.sleep(args.sleep)
+            time.sleep(sleep)
 
     # ── 최종 통계 ────────────────────────────────────────────────────────
+    finished_at     = now_kst()
     wall_time       = time.time() - batch_start
     elapsed_values  = [e for e, _, _ in elapsed_log]
     avg_elapsed     = sum(elapsed_values) / len(elapsed_values) if elapsed_values else 0
     avg_news_per_co = total_news / ok if ok else 0
 
     print(f"\n{'=' * 44}")
-    print(f"=== 완료  {datetime.now().strftime('%H:%M:%S')} ===")
+    print(f"=== 완료  {finished_at.strftime('%H:%M:%S')} ===")
     print(f"{'=' * 44}")
     print(f"  성공: {ok:>5}  |  오류: {err}  |  건너뜀: {skipped}")
     print()
@@ -178,6 +178,32 @@ def main() -> None:
         print(f"\n  느린 종목 TOP{len(slowest)}:")
         for rank, (t, n, c) in enumerate(slowest, 1):
             print(f"    {rank}. {n:<12}  {t:.2f}s  ({c})")
+
+    result = {
+        "stage": "stage_d_news",
+        "run_mode": run_mode,
+        "trigger": trigger,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_sec": round(wall_time, 1),
+        "target_count": total,
+        "success": ok,
+        "skip": skipped,
+        "fail": err,
+        "dart_facts": total_dart,
+        "news_facts": total_news,
+    }
+    write_stage_result("stage_d_news", result)
+    return result
+
+
+def main() -> dict:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force",  action="store_true", help="기존 news facts도 재생성")
+    parser.add_argument("--limit",  type=int, default=None, help="처리 종목 수 제한")
+    parser.add_argument("--sleep",  type=float, default=1.5, help="종목 간 sleep 초")
+    args = parser.parse_args()
+    return run(args.force, args.limit, args.sleep)
 
 
 if __name__ == "__main__":

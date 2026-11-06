@@ -25,6 +25,7 @@ from generate_thesis import (
     generate_thesis_for_stock,
     get_engine,
 )
+from stage_result import now_kst, write_stage_result
 
 
 def get_all_stock_codes(engine) -> list[str]:
@@ -41,6 +42,28 @@ def get_already_done(engine) -> set[str]:
             text("SELECT stock_code FROM ai_reports WHERE thesis_sections IS NOT NULL")
         ).fetchall()
     return {r[0] for r in rows}
+
+
+def get_stage_d_updated_codes(engine) -> list[str]:
+    """
+    이미 Thesis가 있지만 그 이후 Stage D(DART/뉴스)가 갱신된 종목 반환.
+
+    stage_d_sections.generated_at / thesis_sections.generated_at 타임스탬프 비교.
+    (Stage C는 아직 generated_at을 기록하지 않아 비교 대상에서 제외 — 사업보고서
+    기반이라 갱신 빈도가 낮고, 필요해지면 추후 추가.)
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT stock_code FROM ai_reports
+                WHERE thesis_sections IS NOT NULL
+                  AND stage_d_sections IS NOT NULL
+                  AND (stage_d_sections->>'generated_at')::timestamp
+                      > (thesis_sections->>'generated_at')::timestamp
+                ORDER BY stock_code
+            """)
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def get_missing_confidence(engine) -> list[str]:
@@ -82,7 +105,17 @@ def get_underrisk_codes(engine) -> list[str]:
 
 def run(sleep_seconds: float, limit: int | None, force: bool = False,
         fix_missing: bool = False, fix_underrisk: bool = False,
-        codes_file: str | None = None) -> None:
+        codes_file: str | None = None) -> dict:
+    started_at = now_kst()
+    trigger = (
+        "codes_file" if codes_file else
+        "fix_underrisk" if fix_underrisk else
+        "fix_missing" if fix_missing else
+        "manual_force" if force else
+        "incremental_scan"
+    )
+    run_mode = "full_rebuild" if force else "incremental"
+
     engine = get_engine()
     ensure_thesis_column(engine)
 
@@ -102,8 +135,11 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
         print(f"전체 {len(all_codes)}개 강제 재생성 (--force)")
     else:
         done = get_already_done(engine)
-        todo = [c for c in all_codes if c not in done]
-        print(f"전체 {len(all_codes)}개 중 {len(todo)}개 처리 예정 (이미 완료: {len(done)}개)")
+        new_stocks = [c for c in all_codes if c not in done]
+        stale_stocks = [c for c in get_stage_d_updated_codes(engine) if c not in new_stocks]
+        todo = new_stocks + stale_stocks
+        print(f"전체 {len(all_codes)}개 중 신규 {len(new_stocks)}개 + "
+              f"Stage D 갱신 {len(stale_stocks)}개 = {len(todo)}개 처리 예정")
 
     if limit is not None:
         todo = todo[:limit]
@@ -111,9 +147,21 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
 
     if not todo:
         print("처리할 종목 없음.")
-        return
+        finished_at = now_kst()
+        result = {
+            "stage": "stage_e", "run_mode": run_mode, "trigger": trigger,
+            "started_at": started_at.isoformat(), "finished_at": finished_at.isoformat(),
+            "duration_sec": round((finished_at - started_at).total_seconds(), 1),
+            "target_count": 0, "success": 0, "skip": 0, "fail": 0,
+            "quality": {"high": 0, "medium": 0, "low": 0},
+            "attribution": None, "low_confidence": [],
+        }
+        write_stage_result("stage_e", result)
+        return result
 
     success_count = skip_count = error_count = 0
+    quality_dist = {"High": 0, "Medium": 0, "Low": 0}
+    low_confidence: list[dict] = []
 
     for i, code in enumerate(todo, start=1):
         try:
@@ -130,19 +178,29 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
                       f"strengths={s_count} risks={r_count}  "
                       f"reason_graph(quant={qd} dart={dd})")
                 success_count += 1
+
+                conf = result.get("confidence", {})
+                level = conf.get("level")
+                if level in quality_dist:
+                    quality_dist[level] += 1
+                if conf.get("caution"):
+                    low_confidence.append({"stock_code": code, "caution": conf["caution"]})
         except Exception as e:
             error_count += 1
             print(f"[{i}/{len(todo)}] {code} 실패: {e}")
 
         time.sleep(sleep_seconds)
 
+    finished_at = now_kst()
     print()
-    print(f"완료: {datetime.now().isoformat()}")
+    print(f"완료: {finished_at.isoformat()}")
     print(f"성공 {success_count} / 스킵 {skip_count} / 실패 {error_count}")
 
+    attribution = None
     if success_count > 0:
         rs = _thesis_mod._retry_stats
         retry_rate = rs["retried"] / success_count * 100
+        attribution = {"retried": rs["retried"], "permanent_fail": rs["permanent_fail"]}
         print()
         print("=== Attribution Validator 통계 ===")
         print(f"재시도 발생:   {rs['retried']}건 / {success_count}건 ({retry_rate:.1f}%)")
@@ -154,6 +212,28 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
             out_path = pathlib.Path(__file__).parent.parent / "thesis_retry_stocks.txt"
             out_path.write_text("\n".join(retry_stocks), encoding="utf-8")
             print(f"재시도 종목 목록 → {out_path.name} ({len(retry_stocks)}건, QA 샘플용)")
+
+    result = {
+        "stage": "stage_e",
+        "run_mode": run_mode,
+        "trigger": trigger,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_sec": round((finished_at - started_at).total_seconds(), 1),
+        "target_count": len(todo),
+        "success": success_count,
+        "skip": skip_count,
+        "fail": error_count,
+        "quality": {
+            "high": quality_dist["High"],
+            "medium": quality_dist["Medium"],
+            "low": quality_dist["Low"],
+        },
+        "attribution": attribution,
+        "low_confidence": low_confidence,
+    }
+    write_stage_result("stage_e", result)
+    return result
 
 
 if __name__ == "__main__":

@@ -48,5 +48,11 @@ Thumbs.db
 pipeline/violations.txt
 pipeline/'''risks'''
 
+# QA Report (일일 운영 데이터, 커밋 대상 아님)
+qa_reports/
+
 # Claude session files
 .claude/
+
+qa_snapshots/
+Main.java

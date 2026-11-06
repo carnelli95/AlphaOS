@@ -24,5 +24,9 @@ celery_app.conf.update(
             "task": "app.tasks.renew_subscriptions",
             "schedule": 60 * 60 * 24,  # 24시간마다
         },
+        "run-daily-pipeline": {
+            "task": "app.tasks.run_daily_pipeline",
+            "schedule": 60 * 60 * 24,  # 24시간마다 — Stage C~E + QA Report
+        },
     },
 )

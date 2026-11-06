@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 import generate_stage_c as _stage_c_mod
 from generate_stage_c import generate_stage_c_for_stock, get_engine
+from stage_result import now_kst, write_stage_result
 
 
 def get_all_stock_codes(engine) -> list[str]:
@@ -77,7 +78,11 @@ def log_failure(engine, code: str, message: str) -> None:
         )
 
 
-def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: bool = False) -> None:
+def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: bool = False) -> dict:
+    started_at = now_kst()
+    trigger = "manual_force" if force else ("upgrade_format" if upgrade else "new_stock")
+    run_mode = "full_rebuild" if force else "incremental"
+
     engine = get_engine()
     all_codes = get_all_stock_codes(engine)
     if force:
@@ -131,13 +136,16 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: b
 
         time.sleep(sleep_seconds)
 
+    finished_at = now_kst()
     print()
-    print(f"완료: {datetime.now().isoformat()}")
+    print(f"완료: {finished_at.isoformat()}")
     print(f"성공 {success_count} / 스킵 {skip_count} / 실패 {error_count}")
 
+    validator = None
     if success_count > 0:
         rs = _stage_c_mod._retry_stats
         retry_rate = rs["retried"] / success_count * 100
+        validator = {"retried": rs["retried"], "permanent_fail": rs["permanent_fail"]}
 
         print()
         print("=== Validator 재시도 통계 ===")
@@ -150,6 +158,23 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: b
         print(f"risk   빈 배열: {quality['risk_empty']}/{success_count} ({quality['risk_empty']/success_count*100:.1f}%)")
         print(f"moat   빈 배열: {quality['moat_empty']}/{success_count} ({quality['moat_empty']/success_count*100:.1f}%)  ← 목표 < 5%")
         print(f"평균 Fact 수  — growth: {quality['growth_fact_total']/success_count:.1f}  risk: {quality['risk_fact_total']/success_count:.1f}  moat: {quality['moat_fact_total']/success_count:.1f}")
+
+    result = {
+        "stage": "stage_c",
+        "run_mode": run_mode,
+        "trigger": trigger,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_sec": round((finished_at - started_at).total_seconds(), 1),
+        "target_count": len(todo),
+        "success": success_count,
+        "skip": skip_count,
+        "fail": error_count,
+        "validator": validator,
+        "quality": quality,
+    }
+    write_stage_result("stage_c", result)
+    return result
 
 
 if __name__ == "__main__":

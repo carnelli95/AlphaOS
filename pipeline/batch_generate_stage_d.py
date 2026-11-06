@@ -21,8 +21,10 @@ sys.path.insert(0, __import__("os").path.dirname(__file__))
 from generate_ai_report import get_engine
 from collect_stage_d import collect_stage_d_for_stock, ensure_stage_d_column
 from generate_stage_d import generate_stage_d_for_stock
+from stage_result import now_kst, write_stage_result
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 
 def _load_targets(engine, collect_only: bool, generate_only: bool, force: bool) -> list[tuple]:
@@ -65,29 +67,28 @@ def _load_targets(engine, collect_only: bool, generate_only: bool, force: bool) 
     return [(r[0], r[1], r[2]) for r in rows]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--collect-only",  action="store_true")
-    parser.add_argument("--generate-only", action="store_true")
-    parser.add_argument("--force",         action="store_true")
-    parser.add_argument("--period-days",   type=int, default=180)
-    args = parser.parse_args()
-
+def run(collect_only: bool = False, generate_only: bool = False,
+        force: bool = False, period_days: int = 180) -> dict:
     engine = get_engine()
     ensure_stage_d_column(engine)
 
-    targets = _load_targets(engine, args.collect_only, args.generate_only, args.force)
+    targets = _load_targets(engine, collect_only, generate_only, force)
     total   = len(targets)
 
     mode = "collect+generate"
-    if args.collect_only:  mode = "collect only"
-    if args.generate_only: mode = "generate only"
-    if args.force:         mode += " (force)"
+    if collect_only:  mode = "collect only"
+    if generate_only: mode = "generate only"
+    if force:         mode += " (force)"
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Stage D 배치 시작: {total}개  ({mode})")
+    trigger  = "manual_force" if force else "new_stock"
+    run_mode = "full_rebuild" if force else "incremental"
+
+    started_at = now_kst()
+    print(f"[{started_at.strftime('%H:%M:%S')}] Stage D 배치 시작: {total}개  ({mode})")
 
     ok = skip = fail = 0
     no_events = 0
+    disclosures_collected = 0
 
     # 집계용
     from collections import Counter
@@ -99,17 +100,18 @@ def main():
 
         try:
             # Step 1: 수집
-            if not args.generate_only:
+            if not generate_only:
                 result_raw = collect_stage_d_for_stock(
                     engine, code, corp_code,
-                    period_days=args.period_days,
+                    period_days=period_days,
                 )
                 n_disc = len(result_raw.get("disclosures", []))
+                disclosures_collected += n_disc
             else:
                 n_disc = None
 
             # Step 2: Fact 추출
-            if not args.collect_only:
+            if not collect_only:
                 result = generate_stage_d_for_stock(engine, code)
                 if result is None:
                     skip += 1
@@ -133,10 +135,12 @@ def main():
             fail += 1
             print(f"{prefix} 실패: {e}")
 
-    print(f"\n완료: {datetime.now().isoformat()}")
+    finished_at = now_kst()
+    print(f"\n완료: {finished_at.isoformat()}")
     print(f"성공 {ok} / 이벤트없음 {no_events} / 스킵 {skip} / 실패 {fail}")
 
-    if not args.collect_only:
+    total_facts = 0
+    if not collect_only:
         total_facts  = sum(type_counter.values())
         stocks_with_facts = ok - no_events
         avg_facts = total_facts / stocks_with_facts if stocks_with_facts else 0
@@ -182,6 +186,37 @@ def main():
                 print(f"    180일 이내  {row[2]:>5}건")
         except Exception:
             pass
+
+    result = {
+        "stage": "stage_d_dart",
+        "step": mode,
+        "run_mode": run_mode,
+        "trigger": trigger,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_sec": round((finished_at - started_at).total_seconds(), 1),
+        "target_count": total,
+        "success": ok,
+        "no_events": no_events,
+        "skip": skip,
+        "fail": fail,
+        "fact_type_dist": dict(type_counter),
+        "impact_dist": dict(impact_counter),
+        "total_facts": total_facts,
+        "disclosures_collected": disclosures_collected,
+    }
+    write_stage_result("stage_d_dart", result)
+    return result
+
+
+def main() -> dict:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--collect-only",  action="store_true")
+    parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--force",         action="store_true")
+    parser.add_argument("--period-days",   type=int, default=180)
+    args = parser.parse_args()
+    return run(args.collect_only, args.generate_only, args.force, args.period_days)
 
 
 if __name__ == "__main__":

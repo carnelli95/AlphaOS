@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 
 from dotenv import load_dotenv
 from sqlalchemy import text
@@ -99,8 +100,9 @@ def add_news_to_stage_d(
         return sections
 
     updated = dict(sections)
-    updated["facts"]      = merged
-    updated["fact_count"] = len(merged)
+    updated["facts"]        = merged
+    updated["fact_count"]   = len(merged)
+    updated["generated_at"] = datetime.now().isoformat()
 
     with engine.begin() as conn:
         conn.execute(text("""
@@ -117,7 +119,8 @@ def add_news_to_stage_d(
 
 if __name__ == "__main__":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     engine = get_engine()
     target = sys.argv[1] if len(sys.argv) > 1 else "005930"
