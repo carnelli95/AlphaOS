@@ -20,6 +20,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 import generate_thesis as _thesis_mod
+from generate_ai_report import LLMQuotaExhausted
 from generate_thesis import (
     ensure_thesis_column,
     generate_thesis_for_stock,
@@ -185,6 +186,9 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False,
                     quality_dist[level] += 1
                 if conf.get("caution"):
                     low_confidence.append({"stock_code": code, "caution": conf["caution"]})
+        except LLMQuotaExhausted:
+            print("LLM API 크레딧 소진 — 배치 중단 (남은 종목은 다음 실행에서 처리)")
+            raise
         except Exception as e:
             error_count += 1
             print(f"[{i}/{len(todo)}] {code} 실패: {e}")

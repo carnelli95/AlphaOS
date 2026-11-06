@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 import generate_stage_c as _stage_c_mod
+from generate_ai_report import LLMQuotaExhausted
 from generate_stage_c import generate_stage_c_for_stock, get_engine
 from stage_result import now_kst, write_stage_result
 
@@ -129,6 +130,9 @@ def run(sleep_seconds: float, limit: int | None, force: bool = False, upgrade: b
                 if r == 0: quality["risk_empty"] += 1
                 if m == 0: quality["moat_empty"] += 1
                 print(f"[{i}/{len(todo)}] {code} 성공  growth={g} risk={r} moat={m}")
+        except LLMQuotaExhausted:
+            print("LLM API 크레딧 소진 — 배치 중단 (남은 종목은 다음 실행에서 처리)")
+            raise
         except Exception as e:  # noqa: BLE001
             error_count += 1
             log_failure(engine, code, str(e))

@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 
 from generate_ai_report import (
+    LLMQuotaExhausted,
     call_llm,
     compute_metrics,
     compute_signals,
@@ -266,6 +267,8 @@ def extract_stage_c_facts(company_name: str, business_overview: str) -> dict:
             if attempt == 0:
                 print(f"  ⚠ Stage C 일반론 감지 → 재시도: {violations[:2]}")
                 _retry_stats["retried"] += 1
+        except LLMQuotaExhausted:
+            raise  # 빈 facts로 저장되면 안 됨 — 배치 단위로 중단
         except Exception:
             return _EMPTY
 

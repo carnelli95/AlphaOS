@@ -586,17 +586,27 @@ def build_narrative_prompt(
 """
 
 
+class LLMQuotaExhausted(RuntimeError):
+    """API 크레딧/쿼터 소진 — 이후 모든 호출이 실패하므로 배치는 종목 단위로 넘기지 말고 즉시 중단."""
+
+
 def call_llm(prompt: str) -> dict:
     """OpenAI GPT API 호출. response_format=json_object로 JSON 깨짐 방지.
     모델을 교체하려면 이 함수만 수정하면 됨."""
-    from openai import OpenAI
+    from openai import OpenAI, RateLimitError
 
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+    except RateLimitError as exc:
+        if getattr(exc, "code", None) in ("insufficient_quota", "credit_balance_exhausted") \
+                or "insufficient_quota" in str(exc):
+            raise LLMQuotaExhausted(f"LLM API 크레딧 소진: {exc}") from exc
+        raise
     return json.loads(response.choices[0].message.content)
 
 
