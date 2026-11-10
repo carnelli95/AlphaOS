@@ -25,6 +25,7 @@ thesis_retry_stocks.txt
 qa_results.csv
 
 # Celery
+celerybeat-schedule
 celerybeat-schedule.*
 
 # Frontend
