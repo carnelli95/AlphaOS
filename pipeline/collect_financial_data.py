@@ -8,6 +8,7 @@ G_quant (YoY 성장률) 계산을 위해 2022, 2024년 재무 데이터 수집�
   python collect_financial_data.py --year 2022
   python collect_financial_data.py --year 2024
   python collect_financial_data.py --year 2022 --limit 10  # 테스트
+  python collect_financial_data.py --year 2025 --refresh   # 기존 종목도 재수집
 
 DART API 제한: 초당 ~10건 → sleep 0.12s 기본값
 """
@@ -107,13 +108,12 @@ def fetch_and_save(engine, code: str, corp_code: str, year: int) -> int:
     if not rows:
         return 0
 
-    # CFS 우선 중복 제거 — uq_financial_data는 (code, year, account_nm) 3컬럼 제약
-    # DART 응답에서 동일 account_nm이 CFS/OFS 둘 다 오는 경우가 있음
-    rows.sort(key=lambda r: 0 if r["fs_type"] == "CFS" else 1)  # CFS 먼저
+    # CFS/OFS 둘 다 저장 — uq_financial_data_fs (code, year, fs_type, account_nm).
+    # 조회 쪽에서 CFS 우선 적용. 같은 응답 안의 동일 키 중복만 첫 행 기준으로 제거.
     seen: set = set()
     deduped = []
     for r in rows:
-        k = (r["code"], r["year"], r["account_nm"])
+        k = (r["code"], r["year"], r["fs_type"], r["account_nm"])
         if k not in seen:
             seen.add(k)
             deduped.append(r)
@@ -122,21 +122,21 @@ def fetch_and_save(engine, code: str, corp_code: str, year: int) -> int:
         conn.execute(text("""
             INSERT INTO financial_data (code, year, fs_type, account_nm, amount)
             VALUES (:code, :year, :fs_type, :account_nm, :amount)
-            ON CONFLICT ON CONSTRAINT uq_financial_data
-            DO UPDATE SET amount = EXCLUDED.amount, fs_type = EXCLUDED.fs_type
+            ON CONFLICT ON CONSTRAINT uq_financial_data_fs
+            DO UPDATE SET amount = EXCLUDED.amount
         """), deduped)
 
     return len(deduped)
 
 
-def run(year: int, sleep_sec: float, limit: int | None) -> None:
+def run(year: int, sleep_sec: float, limit: int | None, refresh: bool = False) -> None:
     if not DART_API_KEY:
         print("오류: DART_API_KEY 환경변수가 설정되지 않았습니다.")
         sys.exit(1)
 
     engine = get_engine()
     stocks = get_stocks(engine)
-    done   = already_collected(engine, year)
+    done   = set() if refresh else already_collected(engine, year)
 
     targets = [s for s in stocks if s["code"] not in done]
     skipped = len(stocks) - len(targets)
@@ -186,6 +186,8 @@ if __name__ == "__main__":
     parser.add_argument("--year",  type=int, required=True, help="수집 연도 (예: 2022)")
     parser.add_argument("--sleep", type=float, default=0.12, help="종목간 대기(초), 기본 0.12")
     parser.add_argument("--limit", type=int, default=None, help="테스트용 종목 수 제한")
+    parser.add_argument("--refresh", action="store_true",
+                        help="이미 수집된 종목도 다시 수집 (덮어써진 연도 복구용)")
     args = parser.parse_args()
 
-    run(args.year, args.sleep, args.limit)
+    run(args.year, args.sleep, args.limit, args.refresh)

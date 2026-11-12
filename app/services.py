@@ -57,8 +57,8 @@ def save_financial_data(db: Session, corp_code: str, stock_code: str, year: str)
             sa_text("""
                 INSERT INTO financial_data (code, year, fs_type, account_nm, amount)
                 VALUES (:code, :year, :fs_type, :account_nm, :amount)
-                ON CONFLICT ON CONSTRAINT uq_financial_data
-                DO UPDATE SET amount = EXCLUDED.amount, fs_type = EXCLUDED.fs_type
+                ON CONFLICT ON CONSTRAINT uq_financial_data_fs
+                DO UPDATE SET amount = EXCLUDED.amount
             """),
             {"code": stock_code, "year": year, "fs_type": fs_type,
              "account_nm": item['account_nm'], "amount": amount},
