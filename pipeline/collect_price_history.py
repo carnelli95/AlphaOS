@@ -17,6 +17,10 @@ pykrx 1.2.8 변경 사항:
   python collect_price_history.py --from 2022-01-01
   python collect_price_history.py --from 2022-01-01 --to 2024-12-31
   python collect_price_history.py --from 2025-01-01  # 증분 업데이트
+  python collect_price_history.py --delisted         # delisted_stocks 중 stocks에 없는 종목, 폐지일까지
+
+거래정지일: pykrx는 시가·고가·저가·거래량 0, 종가=정지 직전 가격인 행을 돌려준다.
+  _to_int가 0을 None으로 바꾸므로 volume IS NULL 행이 정지일이다(종가는 실제 거래 가격이 아님).
 """
 
 from __future__ import annotations
@@ -212,6 +216,34 @@ def collect_all_indexes(engine, from_d: date, to_d: date) -> None:
         print(f"  {code_key} ({fdr_symbol}): {len(rows)}일 적재")
 
 
+# ─── 상장폐지 종목 ─────────────────────────────────────────────────────────────
+
+def run_delisted(from_d: date) -> None:
+    """delisted_stocks 중 stocks에 없는 종목을 from_d ~ 폐지일까지 수집 (지수 수집 없음)."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT d.code, d.delisting_date FROM delisted_stocks d
+            WHERE d.delisting_date >= :f
+              AND NOT EXISTS (SELECT 1 FROM stocks s WHERE s.code = d.code)
+            ORDER BY d.delisting_date
+        """), {"f": from_d}).fetchall()
+    latest = get_latest_dates(engine, [r[0] for r in rows]) if rows else {}
+    print(f"폐지 종목 수집 대상: {len(rows)}개  (기간 {from_d} ~ 각 폐지일)")
+
+    total = empty = 0
+    for i, (code, dd) in enumerate(rows, 1):
+        fetch_from = (latest[code] + timedelta(days=1)) if code in latest else from_d
+        n = collect_stock(engine, code, fetch_from, dd) if fetch_from <= dd else 0
+        total += n
+        if n == 0 and code not in latest:
+            empty += 1
+        print(f"  [{i:>3}/{len(rows)}] {code}  ({fetch_from}~{dd})  → {n:>5}행")
+        time.sleep(0.3)
+
+    print(f"\n폐지 종목 수집 완료  적재: {total:,}행  빈 응답(신규): {empty}개")
+
+
 # ─── 메인 ────────────────────────────────────────────────────────────────────
 
 def run(from_d: date, to_d: date) -> None:
@@ -270,7 +302,13 @@ if __name__ == "__main__":
     parser.add_argument("--to", dest="to_date",
                         default=date.today().strftime("%Y-%m-%d"),
                         help="수집 종료일 (YYYY-MM-DD, 기본=오늘)")
+    parser.add_argument("--delisted", action="store_true",
+                        help="delisted_stocks 중 stocks에 없는 종목만 --from ~ 폐지일 수집")
     args = parser.parse_args()
+
+    if args.delisted:
+        run_delisted(date.fromisoformat(args.from_date))
+        sys.exit(0)
 
     run(date.fromisoformat(args.from_date),
         date.fromisoformat(args.to_date))

@@ -28,8 +28,6 @@ from datetime import date
 
 from sqlalchemy import text
 
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.dirname(__file__))
 
 from batch_collect_runner import get_engine
@@ -75,7 +73,8 @@ def load_annual_returns(
     engine, return_year: int, codes: list[str]
 ) -> dict[str, float]:
     """
-    price_history에서 return_year 연간 수익률 계산.
+    price_history에서 return_year 연간 수익률 계산 — **지수 전용**(지수 행은 volume이 없다).
+    종목 수익률은 load_period_returns(상장폐지·거래정지 규칙)를 쓴다.
 
     start: return_year 1월~3월 첫 거래일 종가
     end:   return_year 10월~12월 마지막 거래일 종가
@@ -125,6 +124,154 @@ def load_annual_returns(
             if -0.95 <= ret <= 9.5:  # ±95% / +950% 초과는 데이터 이상
                 returns[code] = ret
     return returns
+
+
+# ─── 시점 기준 수익률 (상장폐지·거래정지 처리) ─────────────────────────────────
+#
+# DECISIONS.md 2026-11-13. price_history에서 거래정지일은 volume IS NULL(close=정지 직전가)이다.
+#   시작: 구간 첫 시장 거래일(d0)에 거래정지 중이면 제외(살 수 없는 종목).
+#         d0 행이 없으면(구간 중 신규 상장) 1~3월 첫 행을 쓴다(기존 방식).
+#         d0 이전에 폐지된 종목은 제외.
+#   종료: 구간 안에 폐지 → 폐지일까지의 마지막 실거래 종가(부실은 정리매매 마지막 날).
+#         구간 끝에 정지 중 → 이후 폐지면 마지막 실거래 종가(정리매매), 거래 재개면 재개 후 첫 종가,
+#                              아직 정지 중이면 제외(결과 미확정).
+#   필터: +950% 초과는 모두 제외. −95% 미만은 폐지가 관련된 경우엔 실제 손실이므로 유지.
+
+OUTLIER_HI = 9.5
+OUTLIER_LO = -0.95
+
+STATUS_LABELS = {
+    "ok":                 "정상",
+    "delisted":           "구간 중 폐지 (마지막 실거래 종가)",
+    "halt_end_delisted":  "구간 끝 정지 → 이후 폐지 (정리매매 종가)",
+    "halt_end_resumed":   "구간 끝 정지 → 거래 재개 후 첫 종가",
+    "x_not_listed":       "제외: 구간 시작 전 폐지",
+    "x_halt_start":       "제외: 구간 시작 시 거래정지",
+    "x_no_start":         "제외: 시작가 없음",
+    "x_no_end":           "제외: 종료가 없음",
+    "x_halt_unresolved":  "제외: 구간 끝 정지, 아직 미해소",
+    "x_outlier":          "제외: 이상값",
+}
+_DELISTING_STATUSES = {"delisted", "halt_end_delisted"}
+
+
+def _traded(volume) -> bool:
+    return volume is not None and volume > 0
+
+
+def period_return(
+    rows: list[tuple],           # [(date, close, volume)] 날짜 오름차순, 구간 시작~데이터 끝
+    d0: date,                    # 구간 첫 시장 거래일
+    start_to: date,              # 시작가 탐색 마지막 날 (3/31)
+    end_from: date,              # 종료가 창 시작
+    end_to: date,                # 종료가 창 끝 (구간 끝)
+    delisting_date: date | None,
+) -> tuple[float | None, str]:
+    """한 종목의 구간 수익률과 처리 상태. 순수 함수(테스트 대상)."""
+    if delisting_date is not None and delisting_date < d0:
+        return None, "x_not_listed"
+
+    # 시작가
+    start = next((r for r in rows if r[0] == d0), None)
+    if start is None:
+        start = next((r for r in rows if d0 <= r[0] <= start_to), None)
+    if start is None:
+        return None, "x_no_start"
+    if not _traded(start[2]):
+        return None, "x_halt_start"
+    s_date, s_close = start[0], start[1]
+
+    after = [r for r in rows if r[0] > s_date]
+
+    # 종료가
+    if delisting_date is not None and delisting_date <= end_to:
+        last = [r for r in after if r[0] <= delisting_date and _traded(r[2])]
+        if not last:
+            return None, "x_no_end"
+        e_close, status = last[-1][1], "delisted"
+    else:
+        window = [r for r in after if end_from <= r[0] <= end_to]
+        if not window:
+            return None, "x_no_end"
+        last = window[-1]
+        if _traded(last[2]):
+            e_close, status = last[1], "ok"
+        elif delisting_date is not None:
+            traded = [r for r in after if r[0] <= delisting_date and _traded(r[2])]
+            if not traded:
+                return None, "x_no_end"
+            e_close, status = traded[-1][1], "halt_end_delisted"
+        else:
+            resumed = next((r for r in after if r[0] > last[0] and _traded(r[2])), None)
+            if resumed is None:
+                return None, "x_halt_unresolved"
+            e_close, status = resumed[1], "halt_end_resumed"
+
+    if not s_close or s_close <= 0:
+        return None, "x_no_start"
+    ret = e_close / s_close - 1.0
+    if ret > OUTLIER_HI or (ret < OUTLIER_LO and status not in _DELISTING_STATUSES):
+        return None, "x_outlier"
+    return ret, status
+
+
+def load_delistings(engine) -> dict[str, date]:
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT code, max(delisting_date) FROM delisted_stocks GROUP BY code"
+        )).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def load_period_returns(
+    engine, return_year: int, codes: list[str],
+    delistings: dict[str, date] | None = None,
+) -> tuple[dict[str, float], dict[str, str]]:
+    """
+    종목별 return_year 수익률 (시점 기준 규칙). 반환: (returns, status_by_code).
+    returns에는 제외되지 않은 종목만 들어간다.
+    """
+    today = date.today()
+    end_from, end_to = date(return_year, 10, 1), date(return_year, 12, 31)
+    if end_from > today:
+        end_from, end_to = date(return_year, 4, 1), today
+        print(f"  ※ 부분년도 모드: {return_year}.01 ~ {today.strftime('%Y.%m.%d')} 수익률")
+    if delistings is None:
+        delistings = load_delistings(engine)
+
+    with engine.connect() as conn:
+        d0 = conn.execute(text("""
+            SELECT min(date) FROM price_history
+            WHERE code = 'IDX_KOSPI' AND date >= :s
+        """), {"s": date(return_year, 1, 1)}).scalar()
+        if d0 is None:
+            raise SystemExit(f"IDX_KOSPI에 {return_year}년 데이터 없음 — 구간 시작일을 정할 수 없음")
+        px = conn.execute(text("""
+            SELECT code, date, close, volume FROM price_history
+            WHERE code = ANY(:codes) AND date >= :s
+            ORDER BY code, date
+        """), {"codes": codes, "s": date(return_year, 1, 1)}).fetchall()
+
+    by_code: dict[str, list[tuple]] = {}
+    for code, d, close, vol in px:
+        by_code.setdefault(code, []).append((d, close, vol))
+
+    returns: dict[str, float] = {}
+    status: dict[str, str] = {}
+    for code in codes:
+        ret, st = period_return(by_code.get(code, []), d0, date(return_year, 3, 31),
+                                end_from, end_to, delistings.get(code))
+        status[code] = st
+        if ret is not None:
+            returns[code] = ret
+    return returns, status
+
+
+def status_counts(status: dict[str, str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for st in status.values():
+        out[st] = out.get(st, 0) + 1
+    return out
 
 
 def load_index_return(engine, index_code: str, return_year: int) -> float | None:
@@ -480,16 +627,26 @@ def compute_factor_attribution(
 # ─── 단일 기간 요약 (다중 기간 모드용) ───────────────────────────────────────
 
 def collect_year_summary(
-    engine, score_year: int, return_year: int
+    engine, score_year: int, return_year: int,
+    exclude_delisted: bool = False,
+    delistings: dict[str, date] | None = None,
 ) -> dict | None:
-    """단일 기간 분석 결과를 compact dict로 반환 (인쇄 없음)."""
+    """
+    단일 기간 분석 결과를 compact dict로 반환 (인쇄 없음).
+    exclude_delisted=True: delisted_stocks에 있는 종목(현재까지 폐지된 종목)을 모두 빼고
+    계산한다 — 예전 "현재 상장 종목만" 방식(생존 편향)과 비교하기 위한 민감도 버전.
+    """
     try:
         scores = load_scores(engine, score_year)
     except SystemExit:
         return None
+    if delistings is None:
+        delistings = load_delistings(engine)
+    if exclude_delisted:
+        scores = {c: v for c, v in scores.items() if c not in delistings}
 
     codes   = list(scores.keys())
-    returns = load_annual_returns(engine, return_year, codes)
+    returns, status = load_period_returns(engine, return_year, codes, delistings)
     if len(returns) < 10:
         return None
 
@@ -514,6 +671,8 @@ def collect_year_summary(
         "return_year":  return_year,
         "n_universe":   len(scores),
         "n_used":       len(returns),
+        "status":       status_counts(status),
+        "n_delist_used": sum(1 for c in returns if status[c] in _DELISTING_STATUSES),
         "kospi_ret":    kospi_ret,
         "kosdaq_ret":   kosdaq_ret,
         "alpha90_avg":  a90_avg,
@@ -570,7 +729,7 @@ def print_report(
     if kosdaq_ret is not None: bm.append(f"KOSDAQ {kosdaq_ret*100:+.1f}%")
     print(f"  벤치마크: {' │ '.join(bm) if bm else 'N/A (IDX_KOSPI 없음 — 지수 수집 필요)'}")
     print(f"  Universe: {n_universe}개  │  사용: {n_used}개  │  "
-          f"제외: {n_excl}개 (상장폐지·데이터 부족·이상값)")
+          f"제외: {n_excl}개 (사유는 [2/5] 처리 상태 참조)")
     print(f"{'═'*W}")
 
     # ── 구간별 ──
@@ -834,6 +993,34 @@ def print_multi_summary(summaries: list[dict]) -> None:
     print(f"\n{'═'*W}\n")
 
 
+def print_delisting_comparison(full: list, excl: list) -> None:
+    """폐지 포함/제외 IC 비교 + 기간별 처리 상태 (DECISIONS.md 2026-11-13: 항상 함께 보고)."""
+    W = 78
+    print(f"{'═'*W}")
+    print("  상장폐지 포함 vs 제외(현재 생존 종목만) — IC 비교")
+    print(f"{'─'*W}")
+    print(f"  {'기간':<12} {'IC 포함':>9} {'n':>5} {'IC 제외':>9} {'n':>5} {'차이':>8} {'폐지 사용':>9}")
+    diffs = []
+    for s, x in zip(full, excl):
+        if not s or not x or s["ic"] is None or x["ic"] is None:
+            continue
+        d = s["ic"] - x["ic"]
+        diffs.append(d)
+        print(f"  {s['score_year']}→{s['return_year']:<7} {s['ic']:>+9.4f} {s['n_used']:>5} "
+              f"{x['ic']:>+9.4f} {x['n_used']:>5} {d:>+8.4f} {s['n_delist_used']:>9}")
+    if diffs:
+        ics_f = [s["ic"] for s in full if s and s["ic"] is not None]
+        ics_x = [x["ic"] for x in excl if x and x["ic"] is not None]
+        print(f"  {'평균':<12} {sum(ics_f)/len(ics_f):>+9.4f} {'':>5} "
+              f"{sum(ics_x)/len(ics_x):>+9.4f} {'':>5} {sum(diffs)/len(diffs):>+8.4f}")
+    print(f"\n  처리 상태 (폐지 포함 버전)")
+    keys = [k for k in STATUS_LABELS if any(s and s["status"].get(k) for s in full)]
+    for k in keys:
+        cells = "  ".join(f"{(s['status'].get(k, 0) if s else 0):>5}" for s in full)
+        print(f"    {STATUS_LABELS[k]:<36} {cells}")
+    print(f"{'═'*W}\n")
+
+
 # ─── 메인 ────────────────────────────────────────────────────────────────────
 
 def run_single(engine, score_year: int, return_year: int, top_n: int | None) -> None:
@@ -852,10 +1039,18 @@ def run_single(engine, score_year: int, return_year: int, top_n: int | None) -> 
     n_universe = len(scores)
     codes = list(scores.keys())
 
-    print(f"[2/5] price_history {return_year}년 수익률 계산...")
-    returns = load_annual_returns(engine, return_year, codes)
+    print(f"[2/5] price_history {return_year}년 수익률 계산 (상장폐지·거래정지 규칙)...")
+    delistings = load_delistings(engine)
+    returns, status = load_period_returns(engine, return_year, codes, delistings)
     n_used = len(returns)
     print(f"  → 사용: {n_used}개  제외: {n_universe - n_used}개")
+    for st, n in sorted(status_counts(status).items()):
+        print(f"     {STATUS_LABELS[st]:<36} {n:>4}")
+    surv = {c: r for c, r in returns.items() if c not in delistings}
+    ic_all, ic_surv = compute_ic_stats(scores, returns), compute_ic_stats(scores, surv)
+    if ic_all and ic_surv:
+        print(f"  → IC 폐지 포함 {ic_all['ic']:+.4f} (n={ic_all['n']})  │  "
+              f"폐지 제외(생존 종목만) {ic_surv['ic']:+.4f} (n={ic_surv['n']})")
 
     print(f"[3/5] 벤치마크 (KOSPI/KOSDAQ 지수)...")
     kospi_ret  = load_index_return(engine, INDEX_CODES["KOSPI"],  return_year)
@@ -895,21 +1090,28 @@ def run_multi(engine, top_n: int | None) -> None:
     pairs = [(sy, sy + 1) for sy in years]
     print(f"분석 기간: {' │ '.join(f'{s}→{r}' for s, r in pairs)}")
 
-    summaries = []
+    delistings = load_delistings(engine)
+    summaries, summaries_ex = [], []
     for sy, ry in pairs:
         print(f"\n  [{sy}→{ry}] 계산 중...", end="", flush=True)
-        s = collect_year_summary(engine, sy, ry)
+        s = collect_year_summary(engine, sy, ry, delistings=delistings)
+        sx = collect_year_summary(engine, sy, ry, exclude_delisted=True, delistings=delistings)
         summaries.append(s)
+        summaries_ex.append(sx)
         if s:
-            ic_str = f"IC={s['ic']:+.4f}" if s["ic"] else "IC=N/A"
+            ic_str = f"IC={s['ic']:+.4f}" if s["ic"] is not None else "IC=N/A"
             print(f" 완료  ({ic_str})")
         else:
             print(f" 데이터 부족 — 건너뜀")
 
     print_multi_summary(summaries)
+    print_delisting_comparison(summaries, summaries_ex)
 
 
 if __name__ == "__main__":
+    # Windows 콘솔 UTF-8 출력용. import 시점에 하면 pytest 캡처가 깨져 실행 시에만 적용.
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="AlphaOS 백테스트")
     parser.add_argument("--score-year",  type=int, help="Alpha Score 기준 연도")
     parser.add_argument("--return-year", type=int, help="수익률 검증 연도 (score-year + 1 권장)")

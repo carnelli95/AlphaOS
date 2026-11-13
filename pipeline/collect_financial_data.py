@@ -9,6 +9,7 @@ G_quant (YoY 성장률) 계산을 위해 2022, 2024년 재무 데이터 수집�
   python collect_financial_data.py --year 2024
   python collect_financial_data.py --year 2022 --limit 10  # 테스트
   python collect_financial_data.py --year 2025 --refresh   # 기존 종목도 재수집
+  python collect_financial_data.py --year 2023 --delisted  # delisted_stocks 중 stocks에 없는 종목
 
 DART API 제한: 초당 ~10건 → sleep 0.12s 기본값
 """
@@ -48,6 +49,17 @@ def get_stocks(engine) -> list[dict]:
         rows = conn.execute(text(
             "SELECT code, corp_code FROM stocks WHERE corp_code IS NOT NULL"
         )).fetchall()
+    return [{"code": r[0], "corp_code": r[1]} for r in rows]
+
+
+def get_delisted_stocks(engine) -> list[dict]:
+    """delisted_stocks 중 stocks에 없는 종목 (폐지 종목 보충용)."""
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT DISTINCT d.code, d.corp_code FROM delisted_stocks d
+            WHERE d.corp_code IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM stocks s WHERE s.code = d.code)
+        """)).fetchall()
     return [{"code": r[0], "corp_code": r[1]} for r in rows]
 
 
@@ -129,13 +141,14 @@ def fetch_and_save(engine, code: str, corp_code: str, year: int) -> int:
     return len(deduped)
 
 
-def run(year: int, sleep_sec: float, limit: int | None, refresh: bool = False) -> None:
+def run(year: int, sleep_sec: float, limit: int | None, refresh: bool = False,
+        delisted: bool = False) -> None:
     if not DART_API_KEY:
         print("오류: DART_API_KEY 환경변수가 설정되지 않았습니다.")
         sys.exit(1)
 
     engine = get_engine()
-    stocks = get_stocks(engine)
+    stocks = get_delisted_stocks(engine) if delisted else get_stocks(engine)
     done   = set() if refresh else already_collected(engine, year)
 
     targets = [s for s in stocks if s["code"] not in done]
@@ -144,7 +157,7 @@ def run(year: int, sleep_sec: float, limit: int | None, refresh: bool = False) -
     if limit:
         targets = targets[:limit]
 
-    print(f"[{year}년 재무데이터 수집]")
+    print(f"[{year}년 재무데이터 수집]{' (폐지 종목)' if delisted else ''}")
     print(f"  전체: {len(stocks)}개  스킵(기존): {skipped}개  수집 대상: {len(targets)}개")
     if limit:
         print(f"  --limit {limit} 적용")
@@ -188,6 +201,8 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None, help="테스트용 종목 수 제한")
     parser.add_argument("--refresh", action="store_true",
                         help="이미 수집된 종목도 다시 수집 (덮어써진 연도 복구용)")
+    parser.add_argument("--delisted", action="store_true",
+                        help="delisted_stocks 중 stocks에 없는 종목만 수집")
     args = parser.parse_args()
 
-    run(args.year, args.sleep, args.limit, args.refresh)
+    run(args.year, args.sleep, args.limit, args.refresh, args.delisted)

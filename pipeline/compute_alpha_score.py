@@ -48,7 +48,7 @@ import json
 import math
 import sys
 import io
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import text
 
@@ -425,7 +425,13 @@ def _compute_year_val_signals(financials: dict, stocks_info: dict) -> dict:
 
 
 def _save_history(engine, year: int, scored: list[dict]) -> None:
+    """year 점수를 저장. 이번 계산에 없는 종목의 기존 행은 지운다(유니버스 변경 반영)."""
     with engine.begin() as conn:
+        stale = conn.execute(text(
+            "DELETE FROM alpha_score_history WHERE year = :y AND NOT (code = ANY(:codes))"
+        ), {"y": year, "codes": [i["code"] for i in scored]}).rowcount
+        if stale:
+            print(f"  유니버스에서 빠진 기존 행 {stale}개 삭제")
         for item in scored:
             a = item["alpha_score"]
             bd = a["breakdown"]
@@ -466,17 +472,37 @@ def run_year(engine, year: int) -> None:
     financials = _load_financials_year(engine, year)
     print(f"  재무 데이터: {len(financials)}개 종목")
 
-    # 2. 종목 정보 (sector) + stage_c
+    # 2. 종목 정보 (sector) + stage_c — 시점 기준 유니버스
+    #    현재 상장(stocks) + 상장폐지(delisted_stocks). 단, year 점수를 쓰는 시점
+    #    (year+1년 1월 1일, backtest 수익률 구간 시작) 전에 폐지된 종목은 뺀다.
+    #    폐지 종목은 ai_reports(Stage C)가 없어 G/M/S의 LLM fact가 비어 있다
+    #    → S는 중립 0.5 + ROE<0 주입 리스크만 반영된다(DECISIONS.md 2026-11-13).
+    cutoff = date(year + 1, 1, 1)
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT s.code, s.sector, r.stage_c_sections
-            FROM stocks s
-            LEFT JOIN ai_reports r ON r.stock_code = s.code
-            WHERE s.code = ANY(:codes)
-        """), {"codes": list(financials.keys())}).fetchall()
+            SELECT u.code, u.sector, r.stage_c_sections
+            FROM (
+                SELECT code, sector FROM stocks
+                UNION ALL
+                SELECT d.code, d.sector FROM delisted_stocks d
+                WHERE NOT EXISTS (SELECT 1 FROM stocks s WHERE s.code = d.code)
+            ) u
+            LEFT JOIN ai_reports r ON r.stock_code = u.code
+            WHERE u.code = ANY(:codes)
+              AND NOT EXISTS (
+                  SELECT 1 FROM delisted_stocks d
+                  WHERE d.code = u.code AND d.delisting_date < :cutoff
+              )
+        """), {"codes": list(financials.keys()), "cutoff": cutoff}).fetchall()
 
     stocks_info = {r[0]: {"sector": r[1]} for r in rows}
     stage_c_map = {r[0]: r[2] for r in rows}
+    with engine.connect() as conn:
+        delisted_codes = {r[0] for r in conn.execute(text(
+            "SELECT code FROM delisted_stocks WHERE delisting_date >= :cutoff"
+        ), {"cutoff": cutoff})}
+    n_del = len(delisted_codes & stocks_info.keys())
+    print(f"  유니버스: {len(stocks_info)}개 (이후 상장폐지 {n_del}개 포함, {cutoff} 이전 폐지 제외)")
 
     # 3. 역사적 V신호
     val_signals = _compute_year_val_signals(financials, stocks_info)
