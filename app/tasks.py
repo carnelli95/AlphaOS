@@ -23,7 +23,8 @@ PIPELINE_DIR = str(pathlib.Path(__file__).resolve().parent.parent / "pipeline")
 @celery_app.task(bind=True)
 def run_daily_pipeline(self):
     """
-    일일 파이프라인: Stage C → Stage D(DART) → Stage D(뉴스) → Stage E(Thesis) → QA Report.
+    일일 파이프라인: Stage C → Stage D(DART) → Stage E(Thesis) → QA Report.
+    Stage D(뉴스)는 비활성 — 호출하지 않는다(Naver·OpenAI 비용, DECISIONS.md 2026-11-15).
 
     각 단계는 이전 단계가 예외 없이 끝난 경우에만 실행한다. 종목 단위 실패는 정상
     범위(각 run()이 반환하는 fail 카운트로 집계될 뿐 체인을 막지 않음) — 여기서
@@ -76,8 +77,9 @@ def run_daily_pipeline(self):
 
     _run("stage_c", "batch_generate_stage_c", sleep_seconds=0.5, limit=None)
     _run("stage_d_dart", "batch_generate_stage_d")
-    # 재검색 주기(7일) 도래 종목 중 오래된 순 150개 — 전 종목이 약 1주 주기로 순환
-    _run("stage_d_news", "batch_generate_stage_d_news", limit=150)
+    # Stage D 뉴스는 비활성 (DECISIONS.md 2026-11-15, CLAUDE.md "Stage D 비활성").
+    # 코드는 그대로 두고 호출만 뺀다. 다시 켤 때 아래 줄을 복구한다:
+    #   _run("stage_d_news", "batch_generate_stage_d_news", limit=150)
     _run("stage_e", "batch_generate_thesis", sleep_seconds=0.5, limit=None)
 
     report = generate_qa_report.generate()

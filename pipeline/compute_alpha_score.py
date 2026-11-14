@@ -474,10 +474,11 @@ def run_year(engine, year: int) -> None:
 
     # 2. 종목 정보 (sector) + stage_c — 시점 기준 유니버스
     #    현재 상장(stocks) + 상장폐지(delisted_stocks). 단, year 점수를 쓰는 시점
-    #    (year+1년 1월 1일, backtest 수익률 구간 시작) 전에 폐지된 종목은 뺀다.
+    #    (year+1년 4월 1일, 사업보고서 제출 기한 다음 = backtest 보유 구간 시작) 전에
+    #    폐지된 종목은 뺀다(DECISIONS.md 2026-11-15).
     #    폐지 종목은 ai_reports(Stage C)가 없어 G/M/S의 LLM fact가 비어 있다
     #    → S는 중립 0.5 + ROE<0 주입 리스크만 반영된다(DECISIONS.md 2026-11-13).
-    cutoff = date(year + 1, 1, 1)
+    cutoff = date(year + 1, 4, 1)
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT u.code, u.sector, r.stage_c_sections

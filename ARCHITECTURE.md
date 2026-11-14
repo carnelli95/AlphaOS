@@ -42,7 +42,7 @@
 | `financial_data` | 44,667 → 63,574 (11-12 2023·2025 재수집 후) → 66,125 (11-13 폐지 종목 2,551행 추가) | EAV 재무 데이터 (code, year[varchar], fs_type, account_nm, amount). 유니크 제약은 `uq_financial_data_fs (code, year, fs_type, account_nm)`. **공시일 컬럼 없음**. 833종목, 2022–2025 |
 | `financial_data_fix_log` | 1,645 | 2026-06-23~24 재무 재수집 로그 (2023: 812, 2025: 833) |
 | `price_history` | 1,099,589 → 1,123,188 (11-13 폐지 종목 35개 23,599행 추가) | 일별 OHLCV. 2022-01-03 ~ 2026-11-11, `stocks` 946종목 + 폐지 종목 35개 + 지수 2개(`IDX_KOSPI`, `IDX_KOSDAQ`). **거래정지일도 행이 있다**: open·high·low·volume이 NULL이고 close는 정지 직전 가격(pykrx가 0/직전가를 주고 수집기가 0을 NULL로 저장) |
-| `alpha_score_history` | 3,221 → 3,297 (11-13 재계산) | 연도별 과거 시점 Alpha Score. 11-13 시점 기준 유니버스: 2022: 775, 2023: 836, 2024: 845, 2025: 841 (이후 폐지 종목 포함) |
+| `alpha_score_history` | 3,221 → 3,297 (11-13) → 3,287 (11-15 재계산) | 연도별 과거 시점 Alpha Score. 유니버스(기준일 N+1년 4/1): 2022: 775, 2023: 834, 2024: 844, 2025: 834 (이후 폐지 종목 포함) |
 | `ai_reports` | 833 | 종목당 1행. Stage A~E 결과가 JSONB 컬럼으로 저장된다 (`overview`, `valuation_sections`, `metrics_snapshot`, `stage_b_sections`, `stage_c_sections`, `stage_d_raw`, `stage_d_sections`, `thesis_sections`, `alpha_score`) |
 | `business_reports_raw` | 831 | DART 사업보고서 원문 섹션 |
 | `business_report_collection_log` | 836 | 사업보고서 수집 상태 |
@@ -99,7 +99,7 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 | 실행 | `python batch_generate_stage_d.py` (`--rebuild-window` = 180일 재스캔) |
 | 최근 실행 | 11-10: 공시 132건, 99종목 재생성, Fact 431개, 실패 0 |
 
-### Stage D-뉴스 — 뉴스 이벤트 (LLM) — **비활성 대상, 수정 금지**
+### Stage D-뉴스 — 뉴스 이벤트 (LLM) — **비활성 (11-15 일일 파이프라인에서 호출 제거), 수정 금지**
 
 | 항목 | 내용 |
 |---|---|
@@ -139,6 +139,7 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 | 진단 | `diagnose_quality.py`, `diagnose_risks.py`, `validate_stage_c.py`, `validate_importance.py`, `coverage_report.py` | 표준 출력 |
 | 유니버스 | `load_delisted_stocks.py` (`--dry-run`, `--since`) | `delisted_stocks` 업서트 (FDR KRX-DELISTING + DART corpCode) |
 | 유니버스 | `collect_price_history.py --delisted`, `collect_financial_data.py --year N --delisted` | `delisted_stocks` 중 `stocks`에 없는 종목의 시세(폐지일까지)·재무 수집 |
+| 시점 | `check_filing_dates.py` (`--out`) | 사업보고서 원본 제출일, 3/31 이후 제출 수 (DART 공시 목록, 읽기 전용) |
 | 유니버스 | `check_delisted_coverage.py` | 폐지 종목별 시세·정지일·마지막 실거래일·재무 누락 연도 (읽기 전용) |
 | A/B | `ab_comparison.py` | `ab_comparison_20260629.md`, `ab_comparison_result.json` |
 
@@ -152,7 +153,7 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 |---|---|---|---|
 | `update_stock_prices` | `app/tasks.py` | `fdr.StockListing('KOSPI')`로 **`stocks.price/marcap`만** UPDATE한다. `price_history`에는 쓰지 않는다. | 3회, 60초 |
 | `update_financial_data` | `app/tasks.py` | `corp_code`가 있는 종목 전체에 대해 **전년도(현재 2025)** 사업보고서 주요 계정을 upsert한다(`ON CONFLICT ON CONSTRAINT uq_financial_data_fs`. CFS와 OFS를 둘 다 저장. 11-12 수정, §7.1). | 3회, 300초 |
-| `run_daily_pipeline` | `app/tasks.py` | Stage C → D-DART → D-뉴스(limit 150) → E → QA Report. 앞 Stage가 통째로 실패하면 뒤 Stage는 건너뛰고, QA Report는 항상 생성한다. **OpenAI 비용 발생** | 없음 (의도적) |
+| `run_daily_pipeline` | `app/tasks.py` | Stage C → D-DART → E → QA Report. D-뉴스는 11-15부터 호출하지 않는다(코드는 유지, 주석의 한 줄을 복구하면 다시 켜짐; QA Report는 뉴스 결과가 없으면 건너뜀). 테스트: `app/tests/test_daily_pipeline_stages.py`. 앞 Stage가 통째로 실패하면 뒤 Stage는 건너뛰고, QA Report는 항상 생성한다. **OpenAI 비용 발생** | 없음 (의도적) |
 | `renew_subscriptions` | `app/tasks.py` | 기간이 지난 구독을 `expired`로 바꾼다. 재결제는 하지 않는다. | 3회, 300초 |
 | `daily_collection` | `app/celery_app.py` | beat 트리거용. 위 세 작업(시세 → 재무 → 파이프라인)을 immutable chain으로 발행한다. | — |
 
@@ -180,7 +181,7 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 | ③ | Alpha Score (과거 시점) | `compute_alpha_score.py --year N` → `alpha_score_history` | V(ROE·ROA·영업이익률·RE/Assets의 업종 percentile, PER/PBR 제외) × 0.55 + S × 0.45 | `backtest.py` | **IC +0.21의 출처** |
 
 - 업종 percentile 계산(②, ③)은 `_pct()`로 한다. 업종 안에서 자기보다 작은 값의 비율이다. 업종은 현재 `stocks.sector`를 쓴다(③의 폐지 종목은 `delisted_stocks.sector`, 같은 KSIC 앞 2자리 규칙).
-- ③의 유니버스(11-13~)는 `stocks` ∪ `delisted_stocks` 중 그해 재무가 있고 N+1년 1월 1일 전에 폐지되지 않은 종목이다. 계산에 없는 종목의 기존 행은 지운다.
+- ③의 유니버스(11-13~)는 `stocks` ∪ `delisted_stocks` 중 그해 재무가 있고 N+1년 4월 1일(11-15 변경, 이전엔 1월 1일) 전에 폐지되지 않은 종목이다. 계산에 없는 종목의 기존 행은 지운다.
 - ③의 S와 G/M은 **현재** `ai_reports.stage_c_sections`(최신 사업보고서로 만든 LLM fact)를 모든 과거 연도에 똑같이 쓴다(코드 출력에도 "proxy"라고 명시돼 있다). ROE<0이면 그해 재무로 리스크 fact를 주입한다.
 
 **IC 계산 코드**
@@ -188,7 +189,9 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 | 파일 | 방식 |
 |---|---|
 | `backtest.py:compute_ic_stats` | Spearman ρ (순위 차 공식), p값은 정규 근사 t검정, 95% CI는 Fisher z. 점수 연도 N → 수익률 연도 N+1. `--multi`는 기간별 IC의 평균, 표준편차, t-stat을 내고, 상장폐지 포함/제외 IC 비교표와 처리 상태 표를 함께 출력한다. |
-| `backtest.py:period_return` (11-13~) | 종목 수익률. 시작가는 N+1년 첫 시장 거래일(d0) 종가(그날 거래정지면 제외, d0 행이 없으면 1~3월 첫 행 = 신규 상장). 종료가는 10~12월 마지막 거래일 종가. 구간 중 폐지 → 마지막 실거래 종가. 구간 끝 정지 → 이후 폐지면 정리매매 종가, 재개면 재개 후 첫 종가, 미해소면 제외. +950% 초과는 제외, −95% 미만은 폐지 관련이 아니면 제외. 거래정지일 = `volume IS NULL`. 지수는 기존 `load_annual_returns`(1~3월 첫 종가 → 10~12월 마지막 종가). 테스트: `app/tests/test_backtest_period_return.py` |
+| `backtest.py:period_window` (11-15~) | 보유 구간. N+1년 4월 1일 이후 첫 시장 거래일 ~ N+2년 3월 말 마지막 거래일(12개월). 아직 끝나지 않은 구간은 최신 데이터까지 부분 구간. 지수 수익률도 같은 구간. |
+| `backtest.py` 점수 열 (11-15~) | 주 검증 = `alpha_score_history.valuation`(V 단독), 참고 = `score`(V+S). `--signal v|vs`(단일 기간), `--multi`는 둘 다 출력. 상위 10% 수익률은 순위 기준. IC는 평균 순위 Pearson(동점 처리). |
+| `backtest.py:period_return` (11-13~) | 종목 수익률. 시작가는 구간 첫 시장 거래일(d0) 종가(그날 거래정지면 제외, d0 행이 없으면 4~6월 첫 행 = 신규 상장). 종료가는 종료 창 마지막 거래일 종가. 구간 중 폐지 → 마지막 실거래 종가. 구간 끝 정지 → 이후 폐지면 정리매매 종가, 재개면 재개 후 첫 종가, 미해소면 제외. +950% 초과는 제외, −95% 미만은 폐지 관련이 아니면 제외. 거래정지일 = `volume IS NULL`. 지수는 기존 `load_annual_returns`(1~3월 첫 종가 → 10~12월 마지막 종가). 테스트: `app/tests/test_backtest_period_return.py` |
 | `alpha_ic.py` | `scipy.stats.spearmanr`. 단일 기준일(`--snapshot`) 또는 주간 롤링(`--rolling`). 5/20/60 달력일 forward return, 업종 중립 IC, 5분위, 상·하위 10% 스프레드. 롤링 모드는 **현재** `ai_reports.alpha_score` 하나를 모든 기준일에 적용한다. |
 | `qa_ic.py` | QA 사람 점수와 수익률의 Spearman 상관. 10종목 모두 만점이라 분산이 0이어서 계산할 수 없다. |
 
@@ -315,9 +318,33 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
 - 남은 생존 편향: 구간 끝에 정지 중이고 아직 해소되지 않은 종목은 제외된다(2024→2025 9개, 2025→2026 14개). 이 중 앞으로 폐지되는 종목은 다시 돌리면 정리매매 종가로 들어온다.
 - 폐지 종목은 Stage C가 없어 S가 중립(0.5)이다. 생존 종목의 S는 현재 LLM fact(미래 정보)를 쓴다. 두 그룹의 S 기준이 다르다는 한계가 있다(S 처리 방식은 1단계에서 따로 정한다).
 
+**11-15 보유 구간 변경 + 주 검증 V 단독** (`alpha_score_history` 재계산, 유니버스 기준일 N+1년 4/1, `backtest.py --multi`)
+
+보유 구간: 점수 연도 N → N+1년 4월 첫 거래일 매수 ~ N+2년 3월 말 (12개월). 2025 점수는 2026.04~11.11 부분 구간.
+
+| 점수 연도 → 보유 구간 | IC V (주) | p | 사용/유니버스 | IC V 폐지 제외 | IC V+S (참고) |
+|---|---:|---:|---|---:|---:|
+| 2022 → 2023.04~2024.03 | +0.103 | 0.004 | 762 / 775 | +0.071 | +0.099 |
+| 2023 → 2024.04~2025.03 | +0.237 | <0.001 | 809 / 834 | +0.236 | +0.240 |
+| 2024 → 2025.04~2026.03 | +0.121 | <0.001 | 812 / 844 | +0.123 | +0.128 |
+| 2025 → 2026.04~ (부분) | +0.083 | 0.019 | 799 / 834 | +0.082 | +0.071 |
+| 평균 | **+0.136** (sd 0.069) | | | +0.128 | +0.134 |
+
+변화 분해 (같은 점수로 구간만 바꿔 계산, 읽기 전용):
+
+| | 1월 시작 (기존) | 4월 시작 (현재) |
+|---|---:|---:|
+| V 단독 | +0.163 | **+0.136** |
+| V+S | +0.159 | +0.134 |
+
+- IC 하락(−0.027)은 거의 전부 **매수일을 공시 이후로 옮긴 효과**다. 1~3월 구간이 공시 전 실적 정보를 일부 먹고 있었다는 뜻이다(잠정실적 공시는 1~2월에도 나오므로 4월 기준은 보수적인 선택이다).
+- **S를 빼도 IC가 줄지 않는다**(V가 V+S보다 같거나 높음). 현재 LLM 리스크 분석은 과거 수익률 예측에 기여하지 않았다.
+- 2023 → 2024.04~ 기간의 +0.237은 여전히 높다. 다음 점검 대상이다(업종별 분해, 정정 재무 영향).
+- 기간별 IC 계산을 순위 차 공식에서 평균 순위 Pearson으로 바꿨다(V 점수는 0~100 정수라 동점이 많다). 1월 V+S 평균 +0.1585는 11-13 값 +0.1584와 거의 같아 영향이 작음을 확인했다.
+
 - 2023→2024와 2024→2025의 평균이 **+0.212**다. +0.21은 이 두 기간의 평균이었을 가능성이 높다(**추정**, 기록 없음).
 - 요인 분해: 2023→2024는 V 단독 +0.227, S 단독 +0.142, 2024→2025는 V 단독 +0.197이다.
-- `--multi`의 t-stat은 4개 기간에 정규 근사 p값을 써서 "p=0.0000"으로 나온다. 자유도 3인 t분포로 계산하면 p≈0.02 수준이다. 과대 표시된 것이다.
+- `--multi`의 t-stat은 4개 기간에 정규 근사 p값을 써서 "p=0.0000"으로 나왔다. 11-15부터 자유도 3 t분포 양측 p를 쓴다: V 주 검증 t=+3.94, **p=0.029**. 기간이 4개뿐이라 "5%에서 유의" 정도가 정직한 표현이다.
 - 단기 롤링 IC(`alpha_ic.py --rolling`, 2026-07-01~10-31, 주간)는 스펙에 5D +0.018 / 20D +0.004 / 60D −0.026으로 기록돼 있다. 결과 CSV(`qa_snapshots/`)는 이 맥에 없다.
 
 ---
@@ -332,6 +359,8 @@ ORM 모델(`app/models.py`)은 `stocks`, `financial_data`, `users`, `subscriptio
   2. ③의 S(리스크)와 G/M은 **현재 시점의 LLM fact**를 모든 과거 연도에 쓴다. 2023→2024 기준 S 단독 IC는 +0.142다.
   3. 업종 분류도 현재 `stocks.sector`를 쓴다(영향은 작을 것으로 추정).
   4. §7.1 버그로 2025년 재무가 OFS였다. 11-12에 원천 데이터와 `alpha_score_history` 2025를 모두 고쳤다(2025→2026 IC +0.081 → +0.087).
+- **11-15 조치**: 1은 보유 구간을 N+1년 4월 첫 거래일부터로 옮겨 해결, 2는 주 검증을 V 단독으로 바꿔 분리했다(§7.4). `check_filing_dates.py`로 DART 공시 목록(사업보고서 A001, 정정 제외 원본)을 보면 12월 결산 사업보고서 원본이 3/31 이후 제출된 비율은 2022: 1/803, 2023: 6/815, 2024: 1/806, 2025: 1/802다(가장 늦은 날 4/28). 12월 외 결산 법인 36개는 사업연도 대응이 다를 수 있다(미처리).
+- 남은 미래 정보: `fnlttSinglAcnt`는 정정 반영값을 준다(원본 당시 값이 아닐 수 있음). 업종은 현재 분류를 쓴다.
 
 ### 8.2 유니버스와 상장폐지 종목
 
@@ -371,12 +400,12 @@ FDR KRX-DELISTING 기준 KOSPI 보통주 폐지 43개. DART corp_code 43/43 매�
 |---|---|---|---|---|
 | 1 | 재무 데이터 | ~~예전 유니크 제약이 남아 있어 CFS가 OFS로 덮어써짐~~ → 11-12 수정·재수집·파생 점수(Stage B, Alpha Score) 재계산 완료. 2023년 fs_type 표시도 재수집으로 수정함. LLM 서술 수치, Stage B 연도 혼합, 계정 단위 CFS/OFS 혼합(예: 한화 2023 자본총계) 문제는 남음 | §7.1 | 중간 (남은 문제) |
 | 15 | 표현 | `compute_alpha_score.py` 콘솔 출력이 점수 구간을 "BUY/HOLD/CAUTION"으로 표시함. 투자 조언 표현 금지 원칙과 충돌함 | `compute_alpha_score.py:run` | 낮음 (공개 전 수정) |
-| 2 | 재무 데이터 | 공시일(`rcept_no`/`rcept_dt`)을 저장하지 않음 | §8.1 | 높음 (1단계 선결 조건) |
-| 3 | 백테스트 | 수익률 시작이 1월 초여서 공시일보다 앞섬. 과거 점수가 현재 LLM fact를 씀 | `backtest.py:load_annual_returns`, `compute_alpha_score.py:run_year` | 높음 |
+| 2 | 재무 데이터 | 공시일(`rcept_no`/`rcept_dt`)을 저장하지 않음. **11-15 우회**: 종목별 공시일 대신 공통 매수일 4월 첫 거래일 사용, 3/31 이후 원본 제출은 연도별 0.1~0.7%(`check_filing_dates.py`). 정정공시 반영값(재작성 재무)은 남음 | §8.1 | 낮음 (한계로 문서화) |
+| 3 | 백테스트 | ~~수익률 시작이 1월 초여서 공시일보다 앞섬. 과거 점수가 현재 LLM fact를 씀~~ → **11-15 해결**: 보유 구간 N+1년 4월 첫 거래일 ~ N+2년 3월 말, 주 검증은 V 단독(V+S는 참고치) (§7.4) | `backtest.py:period_window` | 해결 |
 | 4 | 유니버스 | 상장폐지 종목이 없음 (생존 편향). 폐지 종목은 제외될 뿐 손실로 반영되지 않음. **11-13 해결**: `delisted_stocks` 43행, 폐지 종목 35개 시세·재무 수집, 점수 유니버스 시점 기준화, backtest.py 규칙 반영(§5, §7.4). 남은 것: 미해소 정지 종목 제외, 폐지 종목 S 중립 | §8.2 | 높음 |
-| 5 | 백테스트 | 다기간 t-stat에 정규 근사를 써서 p값이 과소 표시됨. 결과를 파일로 남기지 않음 | §7.4 | 중간 |
+| 5 | 백테스트 | ~~다기간 t-stat에 정규 근사를 써서 p값이 과소 표시됨~~ → 11-15 t분포(자유도 k−1)로 수정(`multi_period_t`, 현재 p=0.029). 기간별 IC 동점 처리도 수정. 결과를 파일로 남기지 않는 문제는 남음 | §7.4 | 낮음 |
 | 6 | 시세 | `update_stock_prices`가 `price_history`를 갱신하지 않음. 일일 시세 적재는 수동 스크립트에만 의존 | §4 | 중간 |
-| 7 | Stage D 뉴스 | 83% 종목에 뉴스 fact 0개. relevance가 0.85에 몰려 weighted_score가 양자화됨. 833종목 재검색 기한이 같은 날에 몰림 | §7.3 | 비활성 예정, 수정 안 함 |
+| 7 | Stage D 뉴스 | 83% 종목에 뉴스 fact 0개. relevance가 0.85에 몰려 weighted_score가 양자화됨. 833종목 재검색 기한이 같은 날에 몰림. 11-15 일일 파이프라인에서 호출 제거(기존 뉴스 fact는 `ai_reports`에 남아 있음) | §7.3 | 비활성, 수정 안 함 |
 | 8 | 문서 | `스펙.md`, `PROJECT_OVERVIEW.md`의 beat 설명(24시간)이 오래됨. OVERVIEW는 `update_stock_prices`가 `price_history`를 갱신한다고 잘못 적음 | §4, §7.2 | 낮음 |
 | 9 | 모델/스키마 | `models.FinancialData.year`는 Integer인데 DB는 varchar. `dart_corp_codes`는 0행 | §2 | 낮음 |
 | 10 | 프론트 | 백엔드 주소가 9곳에 하드코딩됨 | §6 | 낮음 |
@@ -385,4 +414,4 @@ FDR KRX-DELISTING 기준 KOSPI 보통주 폐지 43개. DART corp_code 43/43 매�
 | 13 | 보안 | `SECRET_KEY`가 없으면 하드코딩된 JWT 키를 씀 | `app/auth.py` | 공개 전 확인 |
 | 14 | 실험 결과 | `qa_snapshots/`(롤링 IC CSV)가 이 맥에 없음 | §3 | 낮음 |
 
-테스트: `pytest app/tests` → 18 passed (2026-11-12. 구독 테스트는 SQLite 메모리 DB를 쓴다).
+테스트: `pytest app/tests` → 40 passed (2026-11-15. 구독 테스트는 SQLite 메모리 DB를 쓴다).

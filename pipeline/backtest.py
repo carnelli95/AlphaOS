@@ -38,9 +38,15 @@ from batch_collect_runner import get_engine
 MODEL_SPEC = {
     "name":    "Alpha Score (Historical Mode)",
     "version": "v2.6",
-    "signals": "V(ROE/ROA/OpMargin/RE_Assets) · S(Safety)",
-    "weights": "V×0.55 + S×0.45, z-score sigmoid 정규화",
-    "note":    "v2.6: G/M Research Layer 분리. 백테스트 기각 (IC 희석). V+S 기준 모델 확정.",
+    "signals": "주 검증: V(ROE/ROA/OpMargin/RE_Assets 업종 percentile) 단독 · 참고: V+S",
+    "weights": "V+S 참고치 = V×0.55 + S×0.45, z-score sigmoid 정규화",
+    "note":    "S는 현재 LLM 분석을 모든 과거 연도에 써서 미래 정보가 섞임 → 주 검증은 V만 (DECISIONS.md 2026-11-15).",
+}
+
+# 검증할 점수 열 (alpha_score_history)
+SIGNALS = {
+    "v":  ("valuation", "V 단독 (주 검증 모델)"),
+    "vs": ("score",     "V+S (참고치 — S는 현재 LLM 분석 사용)"),
 }
 
 INDEX_CODES = {"KOSPI": "IDX_KOSPI", "KOSDAQ": "IDX_KOSDAQ"}
@@ -56,10 +62,11 @@ TIERS = [
 
 # ─── 데이터 로드 ─────────────────────────────────────────────────────────────
 
-def load_scores(engine, score_year: int) -> dict[str, int]:
+def load_scores(engine, score_year: int, signal: str = "v") -> dict[str, int]:
+    col = SIGNALS[signal][0]   # 화이트리스트 열 이름만 사용
     with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT code, score FROM alpha_score_history WHERE year = :y"
+            f"SELECT code, {col} FROM alpha_score_history WHERE year = :y"
         ), {"y": score_year}).fetchall()
     if not rows:
         raise SystemExit(
@@ -69,28 +76,45 @@ def load_scores(engine, score_year: int) -> dict[str, int]:
     return {r[0]: r[1] for r in rows if r[1] is not None}
 
 
+def period_window(return_year: int, today: date | None = None) -> dict:
+    """
+    보유 구간 (DECISIONS.md 2026-11-15). 점수 연도 N → return_year = N+1.
+      시작: N+1년 4월 1일 이후 첫 시장 거래일 (사업보고서 제출 기한 3/31 다음)
+            신규 상장은 4~6월 첫 거래일
+      종료: N+2년 1~3월 마지막 거래일 (12개월 보유)
+      아직 N+2년 3월 말 전이면 부분 구간: 종료 = 최신 데이터
+    """
+    today = today or date.today()
+    w = {
+        "start_from": date(return_year, 4, 1),
+        "start_to":   date(return_year, 6, 30),
+        "end_from":   date(return_year + 1, 1, 1),
+        "end_to":     date(return_year + 1, 3, 31),
+        "partial":    False,
+    }
+    if w["end_to"] > today:
+        w["partial"] = True
+        w["end_to"] = today
+        if w["end_from"] > today:
+            w["end_from"] = w["start_from"]
+    return w
+
+
+def period_label(return_year: int) -> str:
+    w = period_window(return_year)
+    end = w["end_to"].strftime("%Y.%m.%d") if w["partial"] else f"{return_year + 1}.03"
+    return f"{return_year}.04~{end}" + (" (부분)" if w["partial"] else "")
+
+
 def load_annual_returns(
     engine, return_year: int, codes: list[str]
 ) -> dict[str, float]:
     """
-    price_history에서 return_year 연간 수익률 계산 — **지수 전용**(지수 행은 volume이 없다).
+    구간 수익률 — **지수 전용**(지수 행은 volume이 없다). 구간은 period_window와 같다.
     종목 수익률은 load_period_returns(상장폐지·거래정지 규칙)를 쓴다.
-
-    start: return_year 1월~3월 첫 거래일 종가
-    end:   return_year 10월~12월 마지막 거래일 종가
-          (10월 이전이면 부분년도 — 최신 가능 날짜까지 사용)
-    수익률 ±95% 초과는 데이터 이상으로 간주해 제외.
+    start: 4~6월 첫 거래일 종가 / end: 종료 창 마지막 거래일 종가. ±95%·+950% 초과는 제외.
     """
-    today = date.today()
-    end_from = date(return_year, 10, 1)
-    end_to   = date(return_year, 12, 31)
-    partial  = False
-    if end_from > today:
-        # 아직 10월이 안 됨 — 연초부터 현재까지 부분년도로 계산
-        end_from = date(return_year, 4, 1)
-        end_to   = today
-        partial  = True
-
+    w = period_window(return_year)
     with engine.connect() as conn:
         starts = conn.execute(text("""
             SELECT DISTINCT ON (code) code, close
@@ -98,8 +122,7 @@ def load_annual_returns(
             WHERE code = ANY(:codes)
               AND date >= :s AND date <= :m
             ORDER BY code, date ASC
-        """), {"codes": codes, "s": date(return_year, 1, 1),
-               "m": date(return_year, 3, 31)}).fetchall()
+        """), {"codes": codes, "s": w["start_from"], "m": w["start_to"]}).fetchall()
 
         ends = conn.execute(text("""
             SELECT DISTINCT ON (code) code, close
@@ -107,13 +130,10 @@ def load_annual_returns(
             WHERE code = ANY(:codes)
               AND date >= :m AND date <= :e
             ORDER BY code, date DESC
-        """), {"codes": codes, "m": end_from, "e": end_to}).fetchall()
+        """), {"codes": codes, "m": w["end_from"], "e": w["end_to"]}).fetchall()
 
     s_map = {r[0]: r[1] for r in starts}
     e_map = {r[0]: r[1] for r in ends}
-
-    if partial:
-        print(f"  ※ 부분년도 모드: {return_year}.01 ~ {today.strftime('%Y.%m.%d')} 수익률")
 
     returns = {}
     for code in codes:
@@ -129,8 +149,9 @@ def load_annual_returns(
 # ─── 시점 기준 수익률 (상장폐지·거래정지 처리) ─────────────────────────────────
 #
 # DECISIONS.md 2026-11-13. price_history에서 거래정지일은 volume IS NULL(close=정지 직전가)이다.
+#   구간: period_window (N+1년 4월 첫 거래일 → N+2년 3월 말, DECISIONS.md 2026-11-15).
 #   시작: 구간 첫 시장 거래일(d0)에 거래정지 중이면 제외(살 수 없는 종목).
-#         d0 행이 없으면(구간 중 신규 상장) 1~3월 첫 행을 쓴다(기존 방식).
+#         d0 행이 없으면(구간 중 신규 상장) 4~6월 첫 행을 쓴다.
 #         d0 이전에 폐지된 종목은 제외.
 #   종료: 구간 안에 폐지 → 폐지일까지의 마지막 실거래 종가(부실은 정리매매 마지막 날).
 #         구간 끝에 정지 중 → 이후 폐지면 마지막 실거래 종가(정리매매), 거래 재개면 재개 후 첫 종가,
@@ -162,7 +183,7 @@ def _traded(volume) -> bool:
 def period_return(
     rows: list[tuple],           # [(date, close, volume)] 날짜 오름차순, 구간 시작~데이터 끝
     d0: date,                    # 구간 첫 시장 거래일
-    start_to: date,              # 시작가 탐색 마지막 날 (3/31)
+    start_to: date,              # 신규 상장 시작가 탐색 마지막 날 (6/30)
     end_from: date,              # 종료가 창 시작
     end_to: date,                # 종료가 창 끝 (구간 끝)
     delisting_date: date | None,
@@ -231,11 +252,7 @@ def load_period_returns(
     종목별 return_year 수익률 (시점 기준 규칙). 반환: (returns, status_by_code).
     returns에는 제외되지 않은 종목만 들어간다.
     """
-    today = date.today()
-    end_from, end_to = date(return_year, 10, 1), date(return_year, 12, 31)
-    if end_from > today:
-        end_from, end_to = date(return_year, 4, 1), today
-        print(f"  ※ 부분년도 모드: {return_year}.01 ~ {today.strftime('%Y.%m.%d')} 수익률")
+    w = period_window(return_year)
     if delistings is None:
         delistings = load_delistings(engine)
 
@@ -243,14 +260,14 @@ def load_period_returns(
         d0 = conn.execute(text("""
             SELECT min(date) FROM price_history
             WHERE code = 'IDX_KOSPI' AND date >= :s
-        """), {"s": date(return_year, 1, 1)}).scalar()
+        """), {"s": w["start_from"]}).scalar()
         if d0 is None:
-            raise SystemExit(f"IDX_KOSPI에 {return_year}년 데이터 없음 — 구간 시작일을 정할 수 없음")
+            raise SystemExit(f"IDX_KOSPI에 {w['start_from']} 이후 데이터 없음 — 구간 시작일을 정할 수 없음")
         px = conn.execute(text("""
             SELECT code, date, close, volume FROM price_history
             WHERE code = ANY(:codes) AND date >= :s
             ORDER BY code, date
-        """), {"codes": codes, "s": date(return_year, 1, 1)}).fetchall()
+        """), {"codes": codes, "s": w["start_from"]}).fetchall()
 
     by_code: dict[str, list[tuple]] = {}
     for code, d, close, vol in px:
@@ -259,8 +276,8 @@ def load_period_returns(
     returns: dict[str, float] = {}
     status: dict[str, str] = {}
     for code in codes:
-        ret, st = period_return(by_code.get(code, []), d0, date(return_year, 3, 31),
-                                end_from, end_to, delistings.get(code))
+        ret, st = period_return(by_code.get(code, []), d0, w["start_to"],
+                                w["end_from"], w["end_to"], delistings.get(code))
         status[code] = st
         if ret is not None:
             returns[code] = ret
@@ -300,6 +317,20 @@ def _median(vals: list[float]) -> float:
 def _normal_sf(z: float) -> float:
     """P(Z > z) for Z ~ N(0,1).  math.erfc 기반."""
     return 0.5 * math.erfc(z / math.sqrt(2))
+
+
+def multi_period_t(ics: list[float]) -> tuple[float, float]:
+    """
+    기간별 IC 평균이 0인지 t검정. t = mean / (sd / √k), p는 t분포(자유도 k−1) 양측.
+    기간 수 k가 작아(4개) 정규 근사를 쓰면 p가 크게 과소 표시된다(2026-11-15 수정).
+    """
+    from scipy.stats import t as t_dist
+
+    k = len(ics)
+    m = sum(ics) / k
+    sd = (sum((x - m) ** 2 for x in ics) / (k - 1)) ** 0.5
+    t_stat = m / (sd / math.sqrt(k))
+    return t_stat, float(2 * t_dist.sf(abs(t_stat), df=k - 1))
 
 
 def _rank_vec(vals: list) -> list[float]:
@@ -352,9 +383,9 @@ def compute_ic_stats(
         return None
 
     sv, rv = [c[0] for c in common], [c[1] for c in common]
-    sr, rr = _rank_vec(sv), _rank_vec(rv)
-    d2 = sum((sr[i] - rr[i]) ** 2 for i in range(n))
-    ic = 1 - (6 * d2) / (n * (n ** 2 - 1))
+    # 동점 평균 순위의 Pearson 상관. 순위 차 공식(1-6Σd²/…)은 동점이 많으면
+    # (V 점수는 0~100 정수) 정확하지 않아 2026-11-15에 바꿨다.
+    ic = _spearman(sv, rv)
 
     # p-value (t-검정, large n → 정규 근사)
     if abs(ic) >= 1.0:
@@ -630,6 +661,7 @@ def collect_year_summary(
     engine, score_year: int, return_year: int,
     exclude_delisted: bool = False,
     delistings: dict[str, date] | None = None,
+    signal: str = "v",
 ) -> dict | None:
     """
     단일 기간 분석 결과를 compact dict로 반환 (인쇄 없음).
@@ -637,7 +669,7 @@ def collect_year_summary(
     계산한다 — 예전 "현재 상장 종목만" 방식(생존 편향)과 비교하기 위한 민감도 버전.
     """
     try:
-        scores = load_scores(engine, score_year)
+        scores = load_scores(engine, score_year, signal)
     except SystemExit:
         return None
     if delistings is None:
@@ -655,18 +687,22 @@ def collect_year_summary(
     ic_stats   = compute_ic_stats(scores, returns)
     benchmark  = kospi_ret
 
-    common = {c: (scores[c], returns[c]) for c in scores if c in returns}
-    def _tier_avg(pred):
-        rets = [r for s, r in common.values() if pred(s)]
-        return (sum(rets) / len(rets) if rets else None), len(rets)
+    # 순위 기준 구간 (점수 척도가 V와 V+S에서 달라 고정 임계값 대신 순위 사용)
+    ranked = [returns[c] for c in sorted((c for c in scores if c in returns),
+                                         key=lambda c: scores[c], reverse=True)]
+    def _slice_avg(lo: float, hi: float):
+        n = len(ranked)
+        part = ranked[int(n * lo):max(int(n * hi), int(n * lo) + 1)]
+        return (sum(part) / len(part) if part else None), len(part)
 
-    a90_avg, a90_n = _tier_avg(lambda s: s >= 80)   # Top10% (~80-90 stocks)
-    a80_avg, a80_n = _tier_avg(lambda s: 70 <= s < 80)
+    a90_avg, a90_n = _slice_avg(0.0, 0.1)   # 상위 10%
+    a80_avg, a80_n = _slice_avg(0.1, 0.3)   # 10~30%
     excess90 = (a90_avg - benchmark) if (a90_avg is not None and benchmark is not None) else None
 
     factor_means = load_factor_means(engine, score_year)
 
     return {
+        "signal":       signal,
         "score_year":   score_year,
         "return_year":  return_year,
         "n_universe":   len(scores),
@@ -904,12 +940,15 @@ def print_multi_summary(summaries: list[dict]) -> None:
         print("유효한 기간 없음."); return
 
     print(f"\n{'═'*W}")
-    print(f"  AlphaOS 다중 기간 백테스트 요약")
+    print(f"  AlphaOS 다중 기간 백테스트 요약 — {SIGNALS[valid[0]['signal']][1]}")
     print(f"{'─'*W}")
     print(f"  모델: {MODEL_SPEC['name']} ({MODEL_SPEC['version']})")
     print(f"  신호: {MODEL_SPEC['signals']}")
+    print(f"  보유: 점수 연도 N → N+1년 4월 첫 거래일 매수 ~ N+2년 3월 말 (12개월)")
+    for s in valid:
+        print(f"    {s['score_year']}→{period_label(s['return_year'])}")
     print(f"{'─'*W}")
-    hdr = (f"  {'기간':<12} {'Top10%':>9} {'KOSPI':>8}"
+    hdr = (f"  {'기간':<12} {'상위10%':>9} {'KOSPI':>8}"
            f" {'초과수익':>9} {'IC':>7} {'p값':>7} {'종목(사용)':>10}")
     print(hdr)
     print(f"  {'─'*12} {'─'*9} {'─'*8} {'─'*9} {'─'*7} {'─'*7} {'─'*10}")
@@ -953,10 +992,10 @@ def print_multi_summary(summaries: list[dict]) -> None:
             if ic_std:
                 print(f"    표준편차: {ic_std:.4f}")
                 if len(ics) >= 3:
-                    t_ic = (ic_mean / ic_std) * math.sqrt(len(ics))
-                    p_multi = 2 * _normal_sf(abs(t_ic))
-                    print(f"    t-stat (IC>0): {t_ic:+.3f}  p={p_multi:.4f}"
-                          f" {'** 일관된 예측력' if p_multi < 0.05 else ''}")
+                    t_ic, p_multi = multi_period_t(ics)
+                    print(f"    t-stat (IC≠0): {t_ic:+.3f}  p={p_multi:.4f}"
+                          f"  (t분포, 자유도 {len(ics) - 1}, 양측)"
+                          f" {'* 5% 유의' if p_multi < 0.05 else ''}")
 
     # ── Feature Drift ──
     drift_data = [(s["score_year"], s.get("factor_means"))
@@ -1023,13 +1062,14 @@ def print_delisting_comparison(full: list, excl: list) -> None:
 
 # ─── 메인 ────────────────────────────────────────────────────────────────────
 
-def run_single(engine, score_year: int, return_year: int, top_n: int | None) -> None:
+def run_single(engine, score_year: int, return_year: int, top_n: int | None,
+               signal: str = "v") -> None:
     if return_year <= score_year:
         print("⚠  경고: --return-year > --score-year 여야 look-ahead bias가 없습니다.")
 
-    print(f"[1/5] alpha_score_history {score_year}년 로드...")
-    scores = load_scores(engine, score_year)
-    print(f"  → Universe {len(scores)}개")
+    print(f"[1/5] alpha_score_history {score_year}년 로드 — {SIGNALS[signal][1]}...")
+    scores = load_scores(engine, score_year, signal)
+    print(f"  → Universe {len(scores)}개  보유 구간 {period_label(return_year)}")
 
     if top_n:
         codes_top = sorted(scores, key=lambda c: scores[c], reverse=True)[:top_n]
@@ -1064,7 +1104,8 @@ def run_single(engine, score_year: int, return_year: int, top_n: int | None) -> 
     benchmark = kospi_ret
 
     print(f"[4/5] 구간·분위 분석...")
-    tiers   = analyze_tiers(scores, returns, benchmark)
+    # 고정 점수 구간(80+ 등)은 V+S 척도 기준이라 V 단독에서는 생략 (10분위는 순위 기준)
+    tiers   = analyze_tiers(scores, returns, benchmark) if signal == "vs" else []
     deciles = analyze_deciles(scores, returns, benchmark)
     ls      = compute_long_short(scores, returns)
 
@@ -1091,21 +1132,43 @@ def run_multi(engine, top_n: int | None) -> None:
     print(f"분석 기간: {' │ '.join(f'{s}→{r}' for s, r in pairs)}")
 
     delistings = load_delistings(engine)
-    summaries, summaries_ex = [], []
+    summaries, summaries_ex, summaries_vs = [], [], []
     for sy, ry in pairs:
         print(f"\n  [{sy}→{ry}] 계산 중...", end="", flush=True)
-        s = collect_year_summary(engine, sy, ry, delistings=delistings)
-        sx = collect_year_summary(engine, sy, ry, exclude_delisted=True, delistings=delistings)
+        s  = collect_year_summary(engine, sy, ry, delistings=delistings, signal="v")
+        sx = collect_year_summary(engine, sy, ry, exclude_delisted=True,
+                                  delistings=delistings, signal="v")
+        sv = collect_year_summary(engine, sy, ry, delistings=delistings, signal="vs")
         summaries.append(s)
         summaries_ex.append(sx)
+        summaries_vs.append(sv)
         if s:
-            ic_str = f"IC={s['ic']:+.4f}" if s["ic"] is not None else "IC=N/A"
+            ic_str = f"IC(V)={s['ic']:+.4f}" if s["ic"] is not None else "IC=N/A"
             print(f" 완료  ({ic_str})")
         else:
             print(f" 데이터 부족 — 건너뜀")
 
     print_multi_summary(summaries)
     print_delisting_comparison(summaries, summaries_ex)
+    print_reference_comparison(summaries, summaries_vs)
+
+
+def print_reference_comparison(v: list, vs: list) -> None:
+    """주 검증(V)과 참고치(V+S) IC 나란히. S는 현재 LLM 분석을 써서 미래 정보가 섞여 있다."""
+    W = 78
+    print(f"{'═'*W}")
+    print("  주 검증 V vs 참고 V+S (S = 현재 LLM 분석, 과거 시점 데이터 아님)")
+    print(f"{'─'*W}")
+    print(f"  {'기간':<12} {'IC V':>9} {'IC V+S':>9} {'차이':>8} {'n':>5}")
+    rows = [(a, b) for a, b in zip(v, vs) if a and b and a["ic"] is not None and b["ic"] is not None]
+    for a, b in rows:
+        print(f"  {a['score_year']}→{a['return_year']:<7} {a['ic']:>+9.4f} {b['ic']:>+9.4f} "
+              f"{b['ic'] - a['ic']:>+8.4f} {a['n_used']:>5}")
+    if rows:
+        ma = sum(a["ic"] for a, _ in rows) / len(rows)
+        mb = sum(b["ic"] for _, b in rows) / len(rows)
+        print(f"  {'평균':<12} {ma:>+9.4f} {mb:>+9.4f} {mb - ma:>+8.4f}")
+    print(f"{'═'*W}\n")
 
 
 if __name__ == "__main__":
@@ -1116,6 +1179,8 @@ if __name__ == "__main__":
     parser.add_argument("--score-year",  type=int, help="Alpha Score 기준 연도")
     parser.add_argument("--return-year", type=int, help="수익률 검증 연도 (score-year + 1 권장)")
     parser.add_argument("--top", type=int, default=None, help="상위 N개 종목만 (기본: 전체)")
+    parser.add_argument("--signal", choices=list(SIGNALS), default="v",
+                        help="단일 기간 모드의 점수: v=V 단독(주 검증, 기본) / vs=V+S(참고)")
     parser.add_argument("--multi", action="store_true",
                         help="alpha_score_history 전체 연도로 다중 기간 요약")
     args = parser.parse_args()
@@ -1125,7 +1190,7 @@ if __name__ == "__main__":
     if args.multi:
         run_multi(engine, args.top)
     elif args.score_year and args.return_year:
-        run_single(engine, args.score_year, args.return_year, args.top)
+        run_single(engine, args.score_year, args.return_year, args.top, args.signal)
     else:
         parser.print_help()
         print("\n사용 예:\n"

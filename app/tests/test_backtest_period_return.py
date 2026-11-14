@@ -90,3 +90,45 @@ def test_upper_filter_applies_to_all():
 def test_no_end_price():
     rows = [(D0, 100, 10), (date(2024, 5, 1), 100, 10)]
     assert _r(rows) == (None, "x_no_end")
+
+
+# ─── 보유 구간 (DECISIONS.md 2026-11-15) ───────────────────────────────────────
+
+from backtest import compute_ic_stats, period_window  # noqa: E402
+
+
+def test_period_window_full():
+    w = period_window(2024, today=date(2026, 11, 15))
+    assert w["start_from"] == date(2024, 4, 1)
+    assert w["start_to"] == date(2024, 6, 30)
+    assert (w["end_from"], w["end_to"]) == (date(2025, 1, 1), date(2025, 3, 31))
+    assert w["partial"] is False
+
+
+def test_period_window_partial_before_end_window():
+    w = period_window(2026, today=date(2026, 11, 15))
+    assert w["partial"] is True
+    assert w["end_to"] == date(2026, 11, 15)
+    assert w["end_from"] == date(2026, 4, 1)
+
+
+def test_period_window_partial_inside_end_window():
+    w = period_window(2025, today=date(2026, 2, 10))
+    assert w["partial"] is True
+    assert (w["end_from"], w["end_to"]) == (date(2026, 1, 1), date(2026, 2, 10))
+
+
+def test_ic_handles_ties():
+    # 점수 동점이 많아도 평균 순위 Pearson이면 완전 단조일 때 IC=1에 가깝다
+    scores = {f"c{i}": i // 3 for i in range(30)}          # 3개씩 동점
+    returns = {f"c{i}": float(i // 3) for i in range(30)}  # 같은 순서
+    assert abs(compute_ic_stats(scores, returns)["ic"] - 1.0) < 1e-9
+
+
+def test_multi_period_t_uses_t_distribution():
+    from backtest import multi_period_t
+    ics = [0.1030, 0.2371, 0.1214, 0.0830]
+    t_stat, p = multi_period_t(ics)
+    assert abs(t_stat - 3.938) < 0.01
+    # 정규 근사였다면 p≈0.0001. 자유도 3 t분포에서는 0.02~0.04 사이
+    assert 0.02 < p < 0.04
